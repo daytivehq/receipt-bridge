@@ -1,0 +1,102 @@
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Python tests and checks
+        run: |
+          docker compose -f compose.test.yaml run --build --rm test -q
+          docker compose -f compose.test.yaml run --rm --entrypoint ruff test check --no-cache receipt_bridge tests
+          docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-cache --check receipt_bridge tests
+      - name: UI tests and JavaScript syntax
+        run: docker compose -f compose.test.yaml --profile ui run --rm ui-test
+
+  publish:
+    name: Publish to GHCR
+    needs: verify
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: receipt-bridge-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        id: meta
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import ast
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          repository = os.environ["REPOSITORY"].lower()
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit("Release tag must be vMAJOR.MINOR.PATCH, e.g. v0.1.0")
+          if not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", repository):
+              raise SystemExit("Invalid repository name")
+          tree = ast.parse(Path("receipt_bridge/__init__.py").read_text())
+          version = next(ast.literal_eval(node.value) for node in tree.body
+                         if isinstance(node, ast.Assign)
+                         and any(isinstance(target, ast.Name) and target.id == "__version__"
+                                 for target in node.targets))
+          if tag != "v" + version:
+              raise SystemExit("Release tag does not match receipt_bridge.__version__")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\nimage=ghcr.io/{repository}\n")
+          PY
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.title=Receipt Bridge
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

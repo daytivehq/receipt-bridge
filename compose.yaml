@@ -1,5 +1,6 @@
 services:
   receipt-bridge:
+    image: ${RECEIPT_BRIDGE_IMAGE:-ghcr.io/daytivehq/receipt-bridge:0.1.0}
     build:
       context: .
       target: runtime

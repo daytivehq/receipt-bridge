@@ -29,7 +29,7 @@ docker pull ghcr.io/daytivehq/receipt-bridge:latest
 docker compose up -d --no-build receipt-bridge
 ```
 
-브라우저에서 **http://127.0.0.1:8092/**를 열고 첫 관리자 비밀번호를 만듭니다. `ADMIN_PORT`로 호스트 포트를 바꿀 수 있습니다.
+브라우저에서 **http://127.0.0.1:8092/** 를 열고 첫 관리자 비밀번호를 만듭니다. `ADMIN_PORT`로 호스트 포트를 바꿀 수 있습니다.
 
 다른 PC에서 접근하려면 SSH 터널을 사용하거나 HTTPS 역방향 프록시를 구성하세요. 기본 Compose는 서버 자신의 로컬 주소에서만 접속할 수 있습니다.
 

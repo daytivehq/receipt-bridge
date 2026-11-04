@@ -40,10 +40,10 @@ docker compose -f compose.test.yaml run --rm --entrypoint ruff test check --no-c
 docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-cache --check receipt_bridge tests
 
 # 화면 테스트·JavaScript 구문 검사
-docker compose -f compose.test.yaml --profile ui run --rm ui-test
+docker compose -f compose.test.yaml --profile ui run --build --rm ui-test
 
 # 운영 이미지 빌드
 docker compose build receipt-bridge
 ```
 
-Python·OCR·Node.js 도구는 컨테이너에서 실행합니다. UI 검사 컨테이너는 npm 패키지 설치 시 인터넷이 필요하며, 서비스 접속 정보는 연결하지 않습니다. 테스트용 데이터와 연결 대역은 `tests/fakes.py`에만 두며 운영 패키지에는 포함하지 않습니다.
+Python·OCR·Node.js 도구는 컨테이너에서 실행합니다. UI 이미지 빌드 시 npm 패키지 설치에 인터넷이 필요하며, 테스트 실행은 네트워크를 차단합니다. 호스트의 node_modules나 서비스 접속 정보는 연결하지 않습니다. 테스트용 데이터와 연결 대역은 `tests/fakes.py`에만 두며 운영 패키지에는 포함하지 않습니다.

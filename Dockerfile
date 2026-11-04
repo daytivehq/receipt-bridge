@@ -17,6 +17,15 @@ ENTRYPOINT ["python", "-m", "pytest"]
 
 FROM node:22-bookworm-slim AS node-runtime
 
+# Build dependencies in the image: a fresh checkout has no host node_modules.
+FROM node-runtime AS ui-test
+WORKDIR /workspace/tests/ui
+COPY tests/ui/package.json tests/ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY tests/ui ./
+COPY receipt_bridge/static /workspace/receipt_bridge/static
+CMD ["sh", "-c", "npm test && node --check /workspace/receipt_bridge/static/app.js && node --check /workspace/receipt_bridge/static/settings.js"]
+
 # Optional CLI runner: explicit versions, selected provider only, no ledger/bot secrets.
 FROM base AS cli
 USER root

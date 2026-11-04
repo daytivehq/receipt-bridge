@@ -26,7 +26,7 @@ jobs:
           docker compose -f compose.test.yaml run --rm --entrypoint ruff test check --no-cache receipt_bridge tests
           docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-cache --check receipt_bridge tests
       - name: UI tests and JavaScript syntax
-        run: docker compose -f compose.test.yaml --profile ui run --rm ui-test
+        run: docker compose -f compose.test.yaml --profile ui run --build --rm ui-test
 
   publish:
     name: Publish to GHCR

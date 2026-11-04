@@ -5,6 +5,7 @@
 .venv
 .env*
 config.toml
+config.dev.toml
 secrets
 data
 backups

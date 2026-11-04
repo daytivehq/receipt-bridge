@@ -1,0 +1,6 @@
+# 개발용 설정. 접속 키와 AI 모델은 웹에서 입력합니다.
+web_enabled = true
+web_host = "0.0.0.0"
+web_port = 8092
+data_dir = "/data"
+ledger_url = "http://duet-ledger-dev:8080/api/v1"

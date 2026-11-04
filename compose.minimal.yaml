@@ -1,0 +1,14 @@
+# Receipt Bridge 0.1.1+. Configure connections in the web UI.
+name: receipt-bridge
+services:
+  receipt-bridge:
+    container_name: receipt-bridge
+    image: ghcr.io/daytivehq/receipt-bridge:latest
+    restart: unless-stopped
+    ports:
+      - "8892:8092"
+    volumes:
+      - receipt-data:/data
+    mem_limit: 2g
+volumes:
+  receipt-data:

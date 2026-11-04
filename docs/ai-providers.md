@@ -15,13 +15,27 @@ Ollama에 사용할 모델을 설치한 뒤 서비스 설정에 다음을 입력
 
 - 제공자: Ollama
 - 모델: 설치한 이미지 분석 모델 이름
-- Ollama 주소: 호스트에 설치했다면 `http://host.docker.internal:11434`
+- Ollama 주소: 컨테이너에서 접근 가능한 주소. 예: `http://서버IP:11434`
 
 Ollama가 컨테이너에서 접근 가능한 주소로 수신하고 있는지 확인하세요. Ollama 접근은 신뢰하는 장치로 제한합니다. 모델 크기는 홈서버의 CPU·메모리·GPU에 맞게 선택합니다.
+
+`host.docker.internal`을 사용하려면 [주소 설정](compose.md#연결-주소)의 `extra_hosts`를 추가하세요.
 
 ## CLI 공통 준비
 
 CLI는 가계부·원본·DB와 분리된 `ai-runner` 컨테이너에서 실행합니다. `secrets/ai-home`에는 AI 인증만 넣으며 개인 홈 전체를 연결하지 않습니다.
+
+이하 명령은 **저장소의 `compose.yaml`**을 기준으로 합니다. 새 설치라면 다음으로 준비합니다.
+
+```bash
+git clone https://github.com/daytivehq/receipt-bridge.git
+cd receipt-bridge
+cp .env.example .env
+cp config.example.toml config.toml
+chmod 600 .env
+```
+
+이미 최소 구성으로 운영 중이라면 먼저 백업하고 [기존 데이터 유지 방법](compose.md#기존-설치-유지)에 따라 볼륨을 연결합니다. 기존 설치 폴더에 위 파일을 덮어쓰지 마세요. 이 구성의 기본 접속 주소는 `http://127.0.0.1:8092/`이며 포트는 `.env`의 `ADMIN_PORT`로 변경합니다.
 
 `.env`에 사용할 `AI_PROVIDER`와 해당 CLI 설치 버전을 지정합니다. 예: Antigravity라면 `AI_PROVIDER=agy`, `AGY_VERSION=사용할버전`입니다. 모델 이름은 웹 화면에서 설정합니다.
 
@@ -69,7 +83,7 @@ docker compose --profile cli run --rm -T -e HOME=/ai-home --entrypoint agy ai-ru
 
 출력된 모델 ID를 웹 화면에 입력합니다. 모델 제공 여부는 계정에 따라 다릅니다. 직접 이미지 입력은 사용하지 않으며 OCR 결과가 없으면 중단합니다. 전용 폴더의 권한 설정 파일은 서비스가 관리하므로 개인 플러그인·MCP 설정을 추가하지 마세요.
 
-## 실행
+## 실행·업데이트
 
 앞의 준비 단계에서 ai-runner를 빌드하고 인증한 뒤 실행합니다. 주 서비스는 GHCR의 `latest` 이미지를 사용하고 ai-runner만 로컬에서 빌드합니다.
 
@@ -79,5 +93,7 @@ docker compose --profile cli up -d --no-build receipt-bridge ai-runner
 ```
 
 웹 설정에서 CLI 제공자·모델, 분석 주소 `http://ai-runner:8090`, 외부 전송 허용을 설정합니다. runner에 설치된 제공자와 웹 설정의 제공자가 같아야 합니다.
+
+주 서비스 업데이트는 위의 `pull`·`up` 명령을 사용합니다. CLI 설치 버전을 변경하거나 릴리즈에서 runner 갱신을 안내하면 소스도 갱신하고 `docker compose --profile cli build ai-runner`로 다시 빌드한 뒤 `up` 명령을 실행합니다. runner는 GHCR에서 별도로 배포하지 않습니다.
 
 공식 문서: [Ollama](https://docs.ollama.com/capabilities/vision), [Codex](https://developers.openai.com/codex/noninteractive/), [Claude Code](https://code.claude.com/docs/en/headless), [Antigravity](https://antigravity.google/docs/cli/headless/).

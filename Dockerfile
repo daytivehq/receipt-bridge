@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY pyproject.toml requirements.lock ./
 COPY receipt_bridge ./receipt_bridge
+COPY config.container.toml ./config.toml
 RUN pip install -c requirements.lock . && useradd --uid 10001 --create-home bridge && mkdir /data && chown bridge:bridge /data
 
 FROM base AS test

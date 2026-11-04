@@ -13,7 +13,7 @@ allowed_chats = []                 # 개인 채팅 또는 허용 그룹 ID
 ai_provider = "ollama"                     # ollama | codex | claude | agy(OCR 텍스트 분석)
 ai_model = ""                              # 서버 성능에 맞는 vision 모델 이름 (필수)
 ollama_url = "http://host.docker.internal:11434"
-allow_external_ai = false                  # codex/claude는 명시적으로 true 필요
+allow_external_ai = false                  # codex/claude/agy는 명시적으로 true 필요
 ai_runner_url = "http://ai-runner:8090"
 ai_timeout = 180
 

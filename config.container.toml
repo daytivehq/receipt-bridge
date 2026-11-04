@@ -1,0 +1,5 @@
+# Container defaults. Connections and credentials are configured in the web UI.
+web_enabled = true
+web_host = "0.0.0.0"
+web_port = 8092
+data_dir = "/data"

@@ -62,15 +62,39 @@ Telegram에서 `/help`로 명령을 확인합니다.
 
 ## 업데이트
 
-저장소의 변경 사항을 받은 후 실행합니다. CLI를 쓴다면 두 이미지를 함께 갱신하세요.
+`latest` 이미지를 새로 내려받고 컨테이너를 교체합니다. 먼저 데이터를 백업하세요.
 
 ```bash
-docker compose up -d --build receipt-bridge
-# CLI 사용 시
-docker compose --profile cli up -d --build receipt-bridge ai-runner
+docker compose pull receipt-bridge
+docker compose up -d --no-build receipt-bridge
+docker compose ps
+docker compose logs --tail=50 receipt-bridge
 ```
 
-먼저 백업하고 업데이트 후 화면과 로그를 확인하세요. 설정 파일과 데이터 볼륨은 유지합니다.
+기본 이미지는 `ghcr.io/daytivehq/receipt-bridge:latest`입니다. `docker pull`만 실행하면 이미지만 내려받으며, 실행 중인 서비스는 `up` 명령으로 교체해야 합니다. `latest`는 최근 발행된 정식 릴리즈이며 자동 업데이트 기능은 아닙니다.
+
+`.env`에 이전 버전이 고정되어 있다면 `RECEIPT_BRIDGE_IMAGE=ghcr.io/daytivehq/receipt-bridge:latest`로 변경하세요. 실제 접속 키가 들어 있는 `.env`나 `config.toml`을 예시 파일로 덮어쓰지 마세요. 같은 설치 폴더와 데이터 볼륨을 사용하면 기존 자료를 유지합니다.
+
+### 실행 버전 확인과 버전 고정
+
+화면 하단의 버전을 확인하거나 다음을 실행합니다.
+
+```bash
+docker compose exec receipt-bridge python -c 'from receipt_bridge import __version__; print(__version__)'
+```
+
+특정 버전으로 고정하려면 `.env`의 `RECEIPT_BRIDGE_IMAGE`를 `ghcr.io/daytivehq/receipt-bridge:0.1.0`처럼 지정하고 위 `pull`·`up` 명령을 실행합니다. 향후 버전에서 DB 형식이 변경될 수 있으므로 이전 버전으로 내리기 전에는 해당 릴리즈의 호환성과 백업을 확인하세요.
+
+### CLI 분석 사용 시
+
+주 서비스만 업데이트하면 기존 ai-runner는 유지됩니다. 릴리즈 안내에서 runner 갱신을 요구하거나 CLI 설치 버전을 변경했을 때는 소스 저장소도 갱신한 뒤 별도로 빌드합니다.
+
+```bash
+docker compose --profile cli build ai-runner
+docker compose --profile cli up -d --no-build receipt-bridge ai-runner
+```
+
+ai-runner는 아직 GHCR에 별도 발행하지 않으므로 `docker pull`로 갱신하지 않습니다. 설치 버전과 인증 설정은 [AI 연결 안내](ai-providers.md)를 참고하세요.
 
 ## 백업·복원
 

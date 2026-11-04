@@ -71,8 +71,11 @@ docker compose --profile cli run --rm -T -e HOME=/ai-home --entrypoint agy ai-ru
 
 ## 실행
 
+앞의 준비 단계에서 ai-runner를 빌드하고 인증한 뒤 실행합니다. 주 서비스는 GHCR의 `latest` 이미지를 사용하고 ai-runner만 로컬에서 빌드합니다.
+
 ```bash
-docker compose --profile cli up -d --build receipt-bridge ai-runner
+docker compose pull receipt-bridge
+docker compose --profile cli up -d --no-build receipt-bridge ai-runner
 ```
 
 웹 설정에서 CLI 제공자·모델, 분석 주소 `http://ai-runner:8090`, 외부 전송 허용을 설정합니다. runner에 설치된 제공자와 웹 설정의 제공자가 같아야 합니다.

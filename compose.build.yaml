@@ -1,0 +1,8 @@
+# 개발자가 소스에서 빌드할 때만 함께 사용합니다.
+services:
+  receipt-bridge:
+    image: receipt-bridge:dev
+    pull_policy: build
+    build:
+      context: .
+      target: runtime

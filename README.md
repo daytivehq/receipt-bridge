@@ -17,7 +17,7 @@ Telegram에 올린 영수증 사진을 읽어 [Duet Ledger](https://github.com/d
 
 Docker Engine과 Compose 플러그인, 접속 가능한 Duet Ledger, Telegram 봇, 사용할 AI가 필요합니다. 브리지와 AI 모델은 별도이며 AI 모델은 직접 준비합니다.
 
-저장소를 클론하고 프로젝트 폴더에서 실행하세요. 호스트에 Python이나 Node.js를 별도로 설치할 필요는 없습니다.
+공개된 GHCR 이미지를 받아 실행합니다. 저장소는 Compose·설정 파일을 준비하기 위해 클론하며, 주 서비스를 소스에서 빌드하지 않습니다. 호스트에 Python이나 Node.js를 별도로 설치할 필요는 없습니다.
 
 ```bash
 git clone https://github.com/daytivehq/receipt-bridge.git
@@ -25,7 +25,8 @@ cd receipt-bridge
 cp .env.example .env
 cp config.example.toml config.toml
 chmod 600 .env
-docker compose up -d --build
+docker pull ghcr.io/daytivehq/receipt-bridge:latest
+docker compose up -d --no-build receipt-bridge
 ```
 
 브라우저에서 **http://127.0.0.1:8092/**를 열고 첫 관리자 비밀번호를 만듭니다. `ADMIN_PORT`로 호스트 포트를 바꿀 수 있습니다.
@@ -46,7 +47,20 @@ Telegram 사용자 ID는 **사람 번호**, 채팅 ID는 **대화방 번호**, �
 
 컨테이너 내부의 `127.0.0.1`은 컨테이너 자신입니다. 호스트에 설치한 가계부나 Ollama에는 `host.docker.internal:실제포트`를 사용하세요. 별도 Compose의 서비스 이름은 네트워크를 공유하지 않으면 연결되지 않습니다.
 
-GHCR 이미지가 발행된 뒤에는 [이미지 설치·업데이트 안내](docs/publishing.md)에 따라 소스 빌드 없이 실행할 수 있습니다.
+이미지는 AMD64·ARM64를 지원합니다. 기본 태그 `latest`는 최근 발행된 정식 릴리즈를 가리키며, 실행 중인 컨테이너가 자동으로 업데이트되지는 않습니다.
+
+## 업데이트
+
+데이터를 백업한 뒤 기존 설치 폴더에서 실행합니다.
+
+```bash
+docker compose pull receipt-bridge
+docker compose up -d --no-build receipt-bridge
+docker compose ps
+docker compose logs --tail=50 receipt-bridge
+```
+
+기존 `.env`에 `RECEIPT_BRIDGE_IMAGE`가 버전 태그로 고정되어 있다면 `ghcr.io/daytivehq/receipt-bridge:latest`로 바꿔야 최신 이미지를 받습니다. 같은 폴더와 데이터 볼륨을 유지하세요. 자세한 백업·복원과 버전 고정 방법은 [운영 안내](docs/operations.md)를 참고하세요.
 
 ## AI 연결
 

@@ -42,8 +42,17 @@ docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-
 # 화면 테스트·JavaScript 구문 검사
 docker compose -f compose.test.yaml --profile ui run --build --rm ui-test
 
-# 운영 이미지 빌드
-docker compose build receipt-bridge
+# 소스에서 주 서비스 이미지 빌드
+docker compose -f compose.yaml -f compose.build.yaml build receipt-bridge
 ```
 
 Python·OCR·Node.js 도구는 컨테이너에서 실행합니다. UI 이미지 빌드 시 npm 패키지 설치에 인터넷이 필요하며, 테스트 실행은 네트워크를 차단합니다. 호스트의 node_modules나 서비스 접속 정보는 연결하지 않습니다. 테스트용 데이터와 연결 대역은 `tests/fakes.py`에만 두며 운영 패키지에는 포함하지 않습니다.
+
+
+일반 사용자는 기본 `compose.yaml`로 GHCR 이미지를 실행합니다. 개발 중인 소스를 실행할 때만 빌드용 설정을 함께 사용하세요.
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build receipt-bridge
+```
+
+개발 이미지는 `receipt-bridge:dev`로 구분합니다. 배포 이미지로 돌아가려면 기본 Compose로 `docker compose pull receipt-bridge` 후 `docker compose up -d --no-build receipt-bridge`를 실행합니다.

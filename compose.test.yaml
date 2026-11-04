@@ -1,0 +1,21 @@
+name: receipt-bridge-tests
+
+services:
+  test:
+    build:
+      context: .
+      target: test
+    network_mode: none
+
+  ui-test:
+    profiles: [ui]
+    image: node:22-bookworm-slim
+    working_dir: /workspace/tests/ui
+    volumes:
+      - ./receipt_bridge:/workspace/receipt_bridge:ro
+      - ./tests/ui:/workspace/tests/ui:ro
+      - /workspace/tests/ui/node_modules
+    command:
+      - sh
+      - -c
+      - npm ci --no-audit --no-fund && npm test && node --check /workspace/receipt_bridge/static/app.js && node --check /workspace/receipt_bridge/static/settings.js

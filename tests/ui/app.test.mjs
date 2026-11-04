@@ -1,0 +1,436 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { test } from 'node:test';
+import { Script } from 'node:vm';
+import { JSDOM, VirtualConsole } from 'jsdom';
+
+const html = await readFile(new URL('../../receipt_bridge/static/index.html', import.meta.url), 'utf8');
+const settingsScript = await readFile(new URL('../../receipt_bridge/static/settings.js', import.meta.url), 'utf8');
+const appScript = await readFile(new URL('../../receipt_bridge/static/app.js', import.meta.url), 'utf8');
+const scripts = new Map([['/settings.js',settingsScript],['/app.js',appScript]]);
+const settings = {
+  timezone: 'Asia/Seoul', ledger_url: 'http://mock.invalid/api/v1', allowed_users: [1], allowed_chats: [1],
+  user_accounts: {'1': 'test-account'}, chat_accounts: {}, ai_provider: 'ollama', ai_model: 'test-vision',
+  allow_external_ai: false, ollama_url: 'http://mock.invalid', ai_runner_url: 'http://ai-runner:8090',
+  ai_timeout: 180, ocr_languages: 'kor+eng', max_download_mb: 20, max_attempts: 5,
+  retry_seconds: 30, max_amount_minor: 9000000000000, auto_save: false,
+  auto_max_amount_minor: 50000, auto_max_age_days: 7,
+};
+const job = {id: 'test-job', state: 'waiting', account: 'test-account', created_at: Date.now()/1000,
+  attempts: 0, extraction: {merchant: '<img src=x onerror=alert(1)>', amount: '12000', currency: 'KRW',
+  date: '2026-11-01', time: '12:30', category: 'food'}, has_image: true, has_original: true,
+  events: [{at:Date.now()/1000,state:'received'},{at:Date.now()/1000,state:'waiting'}]};
+const status = {demo:true,ready:true,paused:false,revision:0,applied_revision:0,
+  checks:{telegram:true,ledger:true,ai:true,account:true,allowlist:true}};
+const flush = async () => {for(let i=0;i<12;i++) await new Promise(resolve=>setImmediate(resolve));};
+
+async function app(setupRequired=false,responseStatus=status,savedSecrets={},pathname="/"){
+  const errors=[];
+  const console = new VirtualConsole();
+  console.on('jsdomError', error=>errors.push(error.message));
+  const dom = new JSDOM(html,{url:'http://localhost:18089'+pathname,runScripts:'outside-only',virtualConsole:console});
+  const w=dom.window, requests=[];
+  w.setInterval=()=>0;
+  w.confirm=()=>true;
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  w.fetch=async (path,options={})=>{
+    requests.push({path,options});
+    let body;
+    if(path==='/api/session')body={authenticated:false,setup_required:setupRequired};
+    else if(path==='/api/setup'){body={csrf:'TEST_CSRF'};setupRequired=false;}
+    else if(path==='/api/login')body={csrf:'TEST_CSRF'};
+    else if(path==='/api/logout')body={ok:true};
+    else if(path==='/api/overview')body={status:responseStatus,settings,summary:{total:1,today:1,counts:{waiting:1},dates:[],inbox:0,outbox:0},recent:{items:[job]}};
+    else if(path==='/api/settings')body={settings,status:responseStatus,secrets:savedSecrets};
+    else if(path==='/api/settings/reveal-secret')body={value:'TEST_SAVED_SECRET'};
+    else if(path==='/api/control')body={...status,paused:JSON.parse(options.body).paused};
+    else if(path.startsWith('/api/jobs?'))body={items:[job],total:1,page:1,page_size:20};
+    else if(path.startsWith('/api/logs?'))body={items:[{id:1,at:Date.parse('2026-11-02T15:11:00Z')/1000,level:'info',message:'테스트 로그',job_id:job.id}],total:1,page:1,page_size:50,timezone:'Asia/Seoul'};
+    else if(path==='/api/jobs/test-job')body=job;
+    else throw Error('Unexpected API request '+path);
+    return {ok:true,status:200,json:async()=>structuredClone(body)};
+  };
+  for (const element of w.document.querySelectorAll('script[src]')) {
+    const path=element.getAttribute('src');
+    new Script(scripts.get(path), {filename:path}).runInContext(dom.getInternalVMContext());
+  }
+  await flush();
+  return {dom,w,requests,errors};
+}
+async function login(w){
+  const d=w.document;
+  d.querySelector('#password').value='TEST_ADMIN_PASSWORD';
+  d.querySelector('#login-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+}
+
+test('login, dashboard, navigation and safe rendering of receipt content',async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  assert.equal(d.querySelector('#login').hidden,false);
+  await login(w);
+  assert.equal(d.querySelector('#app').hidden,false);
+  assert.equal(d.querySelectorAll('.stat').length,4);
+  assert.match(d.querySelector('#content').textContent, /사진 한 장이/);
+  assert.equal(d.querySelectorAll('[onerror]').length,0);
+  assert.match(d.querySelector('#content').textContent, /<img src=x/);
+  d.querySelector('[data-page="jobs"]').click();
+  await flush();
+  assert.equal(d.querySelector('#breadcrumb').textContent,'작업 내역');
+  d.querySelector('tr[data-id]').click();
+  await flush();
+  assert.equal(d.querySelector('#detail').open,true);
+  assert.match(d.querySelector('#detail-body').textContent,/조회용/);
+  d.querySelector('#close-detail').click();
+  d.querySelector('[data-page="logs"]').click();
+  await flush();
+  assert.match(d.querySelector('#content').textContent,/테스트 로그/);
+  d.querySelectorAll('.tabs button')[1].click();
+  await flush();
+  assert.ok(requests.some(request=>request.path.includes('kind=events')));
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('settings populate, validate and save with CSRF; logout clears the screen',async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="settings"]').click();
+  await flush();
+  assert.equal(d.querySelector('[name="ai_model"]').value,'test-vision');
+  assert.equal(d.querySelector('[name="telegram_token"]').value,'');
+  assert.equal(d.querySelector('[name="ledger_password"]').value,'');
+  d.querySelector('[name="ai_model"]').value='updated-vision';
+  d.querySelector('[name="ai_model"]').dispatchEvent(new w.Event('input',{bubbles:true}));
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const request=requests.find(request=>request.path==='/api/settings'&&request.options.method==='POST');
+  assert.ok(request);
+  const values=JSON.parse(request.options.body);
+  assert.equal(values.ai_model,'updated-vision');
+  assert.equal(values.auto_save,false);
+  assert.deepEqual(values.allowed_users,[1]);
+  assert.deepEqual(values.user_accounts,{'1':'test-account'});
+  assert.equal(request.options.headers['X-CSRF-Token'],'TEST_CSRF');
+  assert.equal(Object.keys(values).length,Object.keys(settings).length+1);
+  assert.deepEqual(values.secrets,{});
+  d.querySelector('#logout').click();
+  await flush();
+  assert.equal(d.querySelector('#app').hidden,true);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('first visitor sets and confirms the administrator password on screen', async()=>{
+  const {dom,w,requests,errors}=await app(true);
+  const d=w.document;
+  assert.match(d.querySelector('#login-heading').textContent,/처음/);
+  assert.equal(d.querySelector('#password-confirm-row').hidden,false);
+  d.querySelector('#password').value='FIRST_ADMIN_PASSWORD';
+  d.querySelector('#password-confirm').value='WRONG';
+  d.querySelector('#login-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  assert.match(d.querySelector('#login-error').textContent,/일치/);
+  assert.equal(requests.some(r=>r.path==='/api/setup'),false);
+  d.querySelector('#password-confirm').value='FIRST_ADMIN_PASSWORD';
+  d.querySelector('#login-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const sent=requests.find(r=>r.path==='/api/setup');
+  assert.equal(JSON.parse(sent.options.body).confirmation,'FIRST_ADMIN_PASSWORD');
+  assert.equal(d.querySelector('#app').hidden,false);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('connection secret fields and Antigravity are configurable without echoing saved values',async()=>{
+  const {dom,w,requests}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="settings"]').click();
+  await flush();
+  d.querySelector('[name="telegram_token"]').value='123:TEST_BOT_TOKEN';
+  d.querySelector('[name="ledger_password"]').value='TEST_APP_PASSWORD';
+  d.querySelector('[name="ai_provider"]').value='agy';
+  d.querySelector('[name="allow_external_ai"]').checked=true;
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const sent=requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST').at(-1);
+  const payload=JSON.parse(sent.options.body);
+  assert.deepEqual(payload.secrets,{telegram_token:'123:TEST_BOT_TOKEN',ledger_password:'TEST_APP_PASSWORD'});
+  assert.equal(payload.ai_provider,'agy');
+  assert.equal(payload.allow_external_ai,true);
+  assert.equal(d.querySelector('[name="telegram_token"]').value,'');
+  assert.equal(d.querySelector('[name="ledger_password"]').value,'');
+  d.querySelector('[name="remove_telegram_token"]').checked=true;
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const cleared=requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST').at(-1);
+  assert.equal(JSON.parse(cleared.options.body).secrets.telegram_token,null);
+  dom.window.close();
+});
+
+test('log timestamps are exact, range filters survive tab changes and can reset',async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="logs"]').click();
+  await flush();
+  assert.equal(d.querySelector('.log-time').textContent,'2026-11-03 00:11');
+  d.querySelector('#log-from').value='2026-11-03T00:00';
+  d.querySelector('#log-to').value='2026-11-03T00:11';
+  d.querySelector('#log-search').value='연결';
+  d.querySelector('form.log-filters').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  let query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('from'),'2026-11-03T00:00');
+  assert.equal(query.get('to'),'2026-11-03T00:11');
+  assert.equal(query.get('search'),'연결');
+  d.querySelectorAll('.tabs button')[1].click();
+  await flush();
+  query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('kind'),'events');
+  assert.equal(query.get('to'),'2026-11-03T00:11');
+  d.querySelector('#log-reset').click();
+  await flush();
+  query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('from'),'');
+  assert.equal(query.get('to'),'');
+  assert.equal(query.get('search'),'');
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('settings group credentials by service and show only the selected AI configuration', async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="settings"]').click();
+  await flush();
+  assert.match(d.querySelector('[name="ledger_password"]').closest('section').textContent,/가계부 연결/);
+  assert.equal(d.querySelector('[name="ledger_password"]').closest('section').querySelector('[name="telegram_token"]'),null);
+  assert.match(d.querySelector('[name="telegram_token"]').closest('section').textContent,/메신저 연결 · Telegram/);
+  assert.equal(d.querySelectorAll('.planned-connection').length,2);
+  const provider=d.querySelector('[name="ai_provider"]');
+  const visible=key=>!d.querySelector(`[data-setting="${key}"]`).hidden;
+  assert.equal(visible('ollama_url'),true);
+  assert.equal(visible('ai_runner_url'),false);
+  for (const choice of ['agy','codex','claude']) {
+    provider.value=choice;
+    provider.dispatchEvent(new w.Event('change',{bubbles:true}));
+    assert.equal(visible('ollama_url'),false);
+    assert.equal(visible('ai_runner_url'),true);
+    assert.equal(d.querySelector('[name="allow_external_ai"]').closest('.toggle-row').hidden,false);
+    assert.equal(d.querySelector('[name="allow_external_ai"]').checked,false);
+    assert.equal(d.querySelector('[name="ai_model"]').value,'');
+  }
+  provider.value='ollama';
+  provider.dispatchEvent(new w.Event('change',{bubbles:true}));
+  assert.equal(d.querySelector('[name="ai_model"]').value,'test-vision');
+  assert.equal(d.querySelector('[name="allow_external_ai"]').closest('.toggle-row').hidden,true);
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const payload=JSON.parse(requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST').at(-1).options.body);
+  assert.equal(payload.ai_runner_url,settings.ai_runner_url);
+  assert.equal(payload.allow_external_ai,false);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('log range inputs use an explicit 24 hour format and send normalized timestamps',async()=>{
+  const {dom,w,requests}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="logs"]').click();
+  await flush();
+  const start=d.querySelector('#log-from'), end=d.querySelector('#log-to');
+  assert.equal(start.type,'text');
+  start.value='2026-11-03 23:10'; end.value='2026-11-03 23:59';
+  assert.equal(start.checkValidity(),true);
+  end.value='2026-11-03 24:00';
+  assert.equal(end.checkValidity(),false);
+  end.value='2026-11-03 23:59';
+  d.querySelector('.log-filters').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('from'),'2026-11-03T23:10');
+  assert.equal(query.get('to'),'2026-11-03T23:59');
+  assert.ok(d.querySelector('link[rel="icon"][href="/favicon.svg"]'));
+  dom.window.close();
+});
+
+test('incomplete setup shows the exact missing steps in the page and checklist',async()=>{
+  const missing=['메신저 연결 · Telegram → 허용 채팅 ID를 입력하세요.','AI 분석 → 외부 AI 전송 허용을 켜세요.'];
+  const {dom,w}=await app(false,{...status,demo:false,ready:false,missing});
+  await login(w);
+  w.document.querySelector('[data-page="settings"]').click();
+  await flush();
+  const d=w.document;
+  assert.equal(d.querySelectorAll('.setup-checklist li').length,2);
+  for (const text of missing) assert.ok(d.querySelector('.notice.warn').textContent.includes(text));
+  dom.window.close();
+});
+
+test('dashboard setup notice is short, links to settings, and button icons have explicit size',async()=>{
+  const {dom,w}=await app(false,{...status,demo:false,ready:false,paused:true,missing:['PRIVATE_DETAIL']});
+  const d=w.document;
+  await login(w);
+  const notice=d.querySelector('.notice.warn');
+  assert.match(notice.textContent,/서비스 설정에서 연결하기/);
+  assert.equal(notice.textContent.includes('PRIVATE_DETAIL'),false);
+  const button=d.querySelector('.page-head button');
+  assert.match(button.textContent,/처리 재개/);
+  assert.equal(button.querySelector('svg').getAttribute('width'),'18');
+  assert.equal(button.querySelector('svg').getAttribute('height'),'18');
+  notice.querySelector('button').click();
+  await flush();
+  const save=d.querySelector('.save-bar button[type="submit"]');
+  assert.match(save.textContent,/변경 사항 저장/);
+  assert.equal(save.querySelector('svg').getAttribute('width'),'18');
+  assert.equal(save.querySelector('svg path').getAttribute('d'),'M5 12l4 4L19 6');
+  dom.window.close();
+});
+
+test('log picker supports 24-hour selection, manual edits and clearing both filters',async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="logs"]').click(); await flush();
+  for (const [id,value] of [['log-from','2026-11-04 00:00'],['log-to','2026-11-04 23:59']]) {
+    const input=d.querySelector('#'+id);
+    const button=input.parentElement.querySelector('.date-picker-button');
+    button.click();
+    assert.equal(button.getAttribute('aria-expanded'),'true');
+    const picker=d.querySelector('#'+id+'-picker');
+    picker.querySelector('input[type="date"]').value=value.slice(0,10);
+    const choices=picker.querySelectorAll('select');
+    assert.equal(choices[0].options.length,24);
+    assert.equal(choices[1].options.length,60);
+    choices[0].value=value.slice(11,13); choices[1].value=value.slice(14,16);
+    picker.querySelector('button').click();
+    assert.equal(input.value,value);
+    assert.equal(picker.hidden,true);
+    assert.equal(button.getAttribute('aria-expanded'),'false');
+  }
+  d.querySelector('.log-filters').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true})); await flush();
+  let query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('to'),'2026-11-04T23:59');
+  d.querySelector('#log-from').value='2026-11-04 01:15';
+  d.querySelector('#log-from').parentElement.querySelector('.date-picker-button').click();
+  assert.equal(d.querySelector('#log-from-picker select').value,'01');
+  d.querySelector('#log-from-picker').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  assert.equal(d.querySelector('#log-from-picker').hidden,true);
+  d.querySelector('#log-reset').click(); await flush();
+  query=new URL(requests.filter(r=>r.path.startsWith('/api/logs?')).at(-1).path,'http://localhost').searchParams;
+  assert.equal(query.get('from'),''); assert.equal(query.get('to'),'');
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('amount fields group thousands while saving integer values and rejecting invalid input',async()=>{
+  const {dom,w,requests}=await app();
+  const d=w.document;
+  await login(w); d.querySelector('[data-page="settings"]').click(); await flush();
+  const input=d.querySelector('[name="max_amount_minor"]');
+  assert.equal(input.value,'9,000,000,000,000');
+  assert.equal(d.querySelector('[name="auto_max_amount_minor"]').value,'50,000');
+  input.value='1234567'; input.dispatchEvent(new w.Event('input',{bubbles:true}));
+  assert.equal(input.value,'1,234,567');
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true})); await flush();
+  const post=requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST');
+  assert.equal(JSON.parse(post.at(-1).options.body).max_amount_minor,1234567);
+  d.querySelector('[name="max_amount_minor"]').value='12.5';
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true})); await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST').length,post.length);
+  assert.match(d.querySelector('#settings-error').textContent,/정수/);
+  assert.match(d.querySelector('#content').textContent,/Telegram 없이 하나만/);
+  dom.window.close();
+});
+
+test('sidebar hint can be dismissed and the browser preference is retained',async()=>{
+  const {dom,w}=await app();
+  const d=w.document;
+  await login(w);
+  assert.equal(d.querySelector('.sidebar-note').hidden,false);
+  d.querySelector('#dismiss-sidebar-note').click();
+  assert.equal(d.querySelector('.sidebar-note').hidden,true);
+  assert.equal(w.localStorage.getItem('rb-hide-sidebar-note'),'1');
+  d.querySelector('[data-page="logs"]').click(); await flush();
+  assert.equal(d.querySelector('.sidebar-note').hidden,true);
+  dom.window.close();
+});
+
+test('secret buttons toggle typed values without submitting or sending them to the server',async()=>{
+  const {dom,w,requests}=await app();
+  const d=w.document;
+  const loginInput=d.querySelector('#password');
+  const loginToggle=loginInput.parentElement.querySelector('button');
+  loginInput.value='TEST_PASSWORD'; loginToggle.click();
+  assert.equal(loginInput.type,'text');
+  assert.equal(loginToggle.getAttribute('aria-pressed'),'true');
+  assert.equal(requests.some(r=>r.path==='/api/login'),false);
+  loginToggle.click(); assert.equal(loginInput.type,'password');
+  await login(w);
+  d.querySelector('[data-page="settings"]').click(); await flush();
+  for(const name of ['telegram_token','ledger_password']) {
+    const input=d.querySelector(`[name="${name}"]`), toggle=input.parentElement.querySelector('button');
+    input.value='TEST_TYPED_SECRET';
+    toggle.click(); assert.equal(input.type,'text');
+    toggle.click(); assert.equal(input.type,'password');
+    assert.equal(input.value,'TEST_TYPED_SECRET');
+  }
+  assert.equal(requests.some(r=>r.path==='/api/settings/reveal-secret'),false);
+  assert.equal(requests.some(r=>r.path==='/api/settings'&&r.options.method==='POST'),false);
+  dom.window.close();
+});
+
+test('stored secrets are revealed only on demand and previews are not saved or retained on logout',async()=>{
+  const {dom,w,requests}=await app(false,status,{telegram_token:true});
+  const d=w.document;
+  await login(w); d.querySelector('[data-page="settings"]').click(); await flush();
+  let input=d.querySelector('[name="telegram_token"]');
+  assert.equal(input.value,'');
+  assert.equal(requests.some(r=>r.path==='/api/settings/reveal-secret'),false);
+  let toggle=input.parentElement.querySelector('button');
+  toggle.click(); await flush();
+  assert.equal(input.type,'text'); assert.equal(input.value,'TEST_SAVED_SECRET'); assert.equal(input.readOnly,true);
+  const reveal=requests.find(r=>r.path==='/api/settings/reveal-secret');
+  assert.equal(reveal.options.headers['X-CSRF-Token'],'TEST_CSRF');
+  toggle.click();
+  assert.equal(input.type,'password'); assert.equal(input.value,''); assert.equal(input.readOnly,false);
+  toggle.click(); await flush();
+  d.querySelector('#settings-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true})); await flush();
+  const saved=JSON.parse(requests.filter(r=>r.path==='/api/settings'&&r.options.method==='POST').at(-1).options.body);
+  assert.deepEqual(saved.secrets,{});
+  input=d.querySelector('[name="telegram_token"]');
+  input.parentElement.querySelector('button').click(); await flush();
+  d.querySelector('#logout').click(); await flush();
+  assert.equal(input.value,''); assert.equal(input.type,'password');
+  dom.window.close();
+});
+
+test('direct links, browser back and forward preserve routes and unsaved settings',async()=>{
+  const {dom,w}=await app(false,status,{},'/settings');
+  const d=w.document;
+  await login(w);
+  assert.equal(w.location.pathname,'/settings');
+  assert.equal(d.querySelector('#breadcrumb').textContent,'서비스 설정');
+  d.querySelector('[data-page="logs"]').click(); await flush();
+  assert.equal(w.location.pathname,'/logs');
+  d.querySelector('[data-page="settings"]').click(); await flush();
+  const model=d.querySelector('[name="ai_model"]');
+  model.value='UNSAVED'; model.dispatchEvent(new w.Event('input',{bubbles:true}));
+  w.confirm=()=>false;
+  w.history.back(); await new Promise(resolve=>setTimeout(resolve,60)); await flush();
+  assert.equal(w.location.pathname,'/settings');
+  assert.equal(d.querySelector('[name="ai_model"]').value,'UNSAVED');
+  w.confirm=()=>true;
+  w.history.back(); await new Promise(resolve=>setTimeout(resolve,30)); await flush();
+  assert.equal(w.location.pathname,'/logs');
+  assert.equal(d.querySelector('#breadcrumb').textContent,'로그 조회');
+  w.history.forward(); await new Promise(resolve=>setTimeout(resolve,30)); await flush();
+  assert.equal(w.location.pathname,'/settings');
+  assert.equal(d.querySelector('#breadcrumb').textContent,'서비스 설정');
+  dom.window.close();
+});

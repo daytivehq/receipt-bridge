@@ -1,0 +1,58 @@
+services:
+  receipt-bridge:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8092}:8092"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - receipt-data:/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${BRIDGE_MEMORY_LIMIT:-2g}
+    pids_limit: 256
+    stop_grace_period: 5m
+    # 관리 화면은 호스트 로컬에서만 접근. Telegram은 long polling 사용.
+
+  ai-runner:
+    profiles: [cli]
+    build:
+      context: .
+      target: cli
+      args:
+        CLI_PROVIDER: ${AI_PROVIDER:-codex}
+        CODEX_VERSION: ${CODEX_VERSION:-}
+        CLAUDE_VERSION: ${CLAUDE_VERSION:-}
+        AGY_VERSION: ${AGY_VERSION:-}
+    restart: unless-stopped
+    init: true
+    environment:
+      AI_PROVIDER: ${AI_PROVIDER:-codex}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT: ${AI_TIMEOUT:-180}
+      AI_HOME: /ai-home
+      AI_RUNNER_TOKEN: ${AI_RUNNER_TOKEN:-}
+    volumes:
+      - ./secrets/ai-home:/ai-home
+    # .env·config.toml·receipt-data·Docker socket을 연결하지 않습니다.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    stop_grace_period: 4m
+    # 내부 네트워크에서만 8090 사용, 호스트 포트 공개 없음.
+
+volumes:
+  receipt-data:

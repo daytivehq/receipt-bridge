@@ -1,0 +1,39 @@
+# 접속 키는 웹 서비스 설정에서 입력합니다. 환경 변수·Docker secret은 선택적으로 지원합니다.
+web_enabled = true
+web_host = "0.0.0.0"              # Docker 컨테이너 내부 수신 주소
+web_port = 8092
+web_secure_cookie = false        # HTTPS 역방향 프록시 사용 시 true
+
+data_dir = "/data"
+timezone = "Asia/Seoul"
+ledger_url = "http://duet-ledger:8080/api/v1" # 예시: 실제 주소/포트로 변경
+allowed_users = []                 # 사용자 ID (숫자)
+allowed_chats = []                 # 개인 채팅 또는 허용 그룹 ID
+
+ai_provider = "ollama"                     # ollama | codex | claude | agy(OCR 텍스트 분석)
+ai_model = ""                              # 서버 성능에 맞는 vision 모델 이름 (필수)
+ollama_url = "http://host.docker.internal:11434"
+allow_external_ai = false                  # codex/claude는 명시적으로 true 필요
+ai_runner_url = "http://ai-runner:8090"
+ai_timeout = 180
+
+max_download_mb = 20
+max_attempts = 5
+retry_seconds = 30
+max_amount_minor = 9000000000000            # 최소 통화 단위, Duet Ledger 한도 이하
+ocr_languages = "kor+eng"
+auto_save = false
+# 자동 저장: 유효한 금액/날짜/시간/계좌/분류, 독립 OCR 대조, 합계 산술 검사,
+# 중복 후보 없음, 보정/AI 경고 없음이 모두 필요합니다.
+auto_max_amount_minor = 50000              # KRW 50,000원 / USD 500.00달러
+# 오늘 기준 오래된 영수증은 자동 저장하지 않습니다.
+auto_max_age_days = 7
+
+# 사용자별 설정 우선, 없으면 채팅별 계좌 사용. API에서 조회한 실제 ID 사용.
+[user_accounts]
+# "123456789" = "REPLACE_WITH_ACCOUNT_ID"
+[chat_accounts]
+# "-1001234567890" = "REPLACE_WITH_ACCOUNT_ID"
+
+# 운영 화면: Compose에서 호스트의 127.0.0.1:8092로만 연결합니다.
+# 관리자 비밀번호는 첫 접속 화면에서 설정합니다 (12자 이상).

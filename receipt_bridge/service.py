@@ -46,6 +46,8 @@ class Service:
         return f"update:{bot}:{update['update_id']}" if bot else f"update:{update['update_id']}"
 
     def require_account(self, job, account=None):
+        if job["adapter"] == "web":
+            return  # Browser intake is admin-authenticated; ledger roles are rechecked before saving.
         if not self.settings.account_allowed(job["user"], job["chat"], account or job["account"]):
             raise ValueError(
                 "이 사용자·대화방에 허용된 저장 계좌가 아닙니다. 관리자에게 계좌 설정을 요청하세요"
@@ -118,8 +120,7 @@ class Service:
                 if action == "confirm":
                     self.confirm(job, context)
                 elif action == "cancel":
-                    self.editable(job)
-                    self.store.update(job_id, state="cancelled")
+                    self.cancel(job)
                     self.reply(update, chat, f"{job_id}: 취소했습니다. 보관한 원본은 남아 있습니다")
                 elif action == "edit":
                     self.reply(update, chat, HELP)
@@ -168,14 +169,10 @@ class Service:
                 _, cats = context or self.ledger.context(job["account"])
                 self.reply(update, chat, "\n".join(f"{c['code']}: {c['name']}" for c in cats))
             elif command == "/retry":
-                if job["state"] not in {"failed", "create_failed", "attach_failed"}:
-                    raise ValueError("실패한 작업만 재시도할 수 있습니다")
-                stage = "attaching" if job["posting_id"] else "creating" if job["payload"] else "received"
-                self.store.update(job["id"], state=stage, attempts=0, next_at=0, error=None)
+                self.retry(job)
                 self.reply(update, chat, f"{job['id']}: 실패한 단계부터 다시 시도합니다")
             elif command == "/cancel":
-                self.editable(job)
-                self.store.update(job["id"], state="cancelled")
+                self.cancel(job)
                 self.reply(update, chat, f"{job['id']}: 취소했습니다. 원본은 보관됩니다")
             elif command == "/edit":
                 self.editable(job)
@@ -235,25 +232,46 @@ class Service:
         )
         self.reply(update, chat, f"{job['id']}: {'영수증' if file_id else '지출 텍스트'}을 접수했습니다")
 
+    def cancel(self, job):
+        self.editable(job)
+        self.store.update(job["id"], state="cancelled", revision=job["revision"] + 1)
+
+    def retry(self, job):
+        if job["state"] not in {"failed", "create_failed", "attach_failed"}:
+            raise ValueError("실패한 작업만 재시도할 수 있습니다")
+        stage = "attaching" if job["posting_id"] else "creating" if job["payload"] else "received"
+        self.store.update(job["id"], state=stage, attempts=0, next_at=0, error=None)
+
     def edit(self, job, text, context=None):
-        ex = json.loads(job["extraction"])
-        conflicts = json.loads(job["conflicts"])
-        account = job["account"]
         if text.startswith("merchant="):
-            ex["merchant"] = text.removeprefix("merchant=").strip()
+            values = {"merchant": text.removeprefix("merchant=").strip()}
         else:
-            pairs = text.split()
-            for pair in pairs:
+            values = {}
+            for pair in text.split():
                 if "=" not in pair:
                     raise ValueError("수정은 필드=값 형태로 입력하세요")
                 key, value = pair.split("=", 1)
-                if key == "account":
-                    account = value
-                elif key in {"amount", "date", "time", "currency", "category"}:
-                    ex[key] = None if value == "null" else value
-                    conflicts.pop(key, None)
-                else:
-                    raise ValueError("지원하지 않는 수정 항목입니다")
+                values[key] = None if value == "null" else value
+        self.edit_values(job, values, context)
+
+    def edit_values(self, job, values, context=None):
+        if not values or not values.keys() <= {
+            "merchant",
+            "account",
+            "amount",
+            "date",
+            "time",
+            "currency",
+            "category",
+        }:
+            raise ValueError("지원하지 않는 수정 항목입니다")
+        ex = json.loads(job["extraction"])
+        conflicts = json.loads(job["conflicts"])
+        account = values.get("account", job["account"])
+        for key, value in values.items():
+            if key != "account":
+                ex[key] = value
+                conflicts.pop(key, None)
         extraction = Extraction.model_validate(ex)
         # Allow incremental repair of several unreadable fields; confirmation still validates all.
         self.require_account(job, account)
@@ -303,6 +321,8 @@ class Service:
         )
 
     def status(self, job, key=None):
+        if job["adapter"] == "web":
+            return  # Browser jobs are tracked in the DB and never generate Telegram messages.
         key = key or f"status:{job['id']}:{job['revision']}:{job['state']}"
         lines = [f"작업 {job['id']} · {job['state']}", f"계좌: {job['account']}"]
         if job["input_kind"] == "text":
@@ -407,6 +427,8 @@ class Service:
         original = folder / "original.bin"
         output = folder / f"corrected-{job['revision']}.jpg"
         if not original.exists():
+            if job["adapter"] == "web":
+                raise ValueError("업로드 원본이 없습니다. 데이터 볼륨을 확인하세요")
             data = self.messenger.download(job["file_id"])
             # Preserve the exact received bytes before parsing or transforming them.
             atomic_write(original, data)
@@ -442,8 +464,10 @@ class Service:
         eligible = False
         try:
             ex, payload, duplicates = self.evaluate(job)
-            eligible = not job["input_text"] and auto_eligible(
-                ex, payload, ocr, self.settings, duplicates, notes
+            eligible = (
+                job["adapter"] != "web"
+                and not job["input_text"]
+                and auto_eligible(ex, payload, ocr, self.settings, duplicates, notes)
             )
         except ValueError as exc:
             error = str(exc)
@@ -552,8 +576,8 @@ class Service:
             if self.settings.authorized(job["user"], job["chat"]):
                 self.status(job)
 
-    def tick(self):
-        update = self.store.next_update()
+    def tick(self, telegram_ready=True):
+        update = self.store.next_update() if telegram_ready else None
         if update:
             update_id, body = update
             context = self.prepare_context(body)
@@ -566,14 +590,14 @@ class Service:
                     self.messenger.answer(callback["id"])
                 except RemoteError:
                     pass
-        job = None if self.store.setting("paused", False) else self.store.due_job()
+        job = None if self.store.setting("paused", False) else self.store.due_job(web_only=not telegram_ready)
         if job:
             # Permission removal in config also stops queued jobs after a restart.
-            if self.settings.authorized(job["user"], job["chat"]):
+            if job["adapter"] == "web" or self.settings.authorized(job["user"], job["chat"]):
                 self.work(job)
             else:
                 self.store.update(job["id"], next_at=time.time() + 300)
-        notification = self.store.next_notification()
+        notification = self.store.next_notification() if telegram_ready else None
         if notification and notification["chat"] not in self.settings.allowed_chats:
             self.store.notification_result(notification, True)
             return True

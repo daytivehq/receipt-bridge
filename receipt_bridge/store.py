@@ -72,6 +72,7 @@ class Store:
             "conflicts": "TEXT NOT NULL DEFAULT '{}'",
             "batch_size": "INTEGER NOT NULL DEFAULT 1",
             "part": "INTEGER NOT NULL DEFAULT 0",
+            "upload_digest": "TEXT",
         }.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
@@ -186,13 +187,13 @@ class Store:
                     (job_id, fields["state"], fields["updated_at"]),
                 )
 
-    def due_job(self):
+    def due_job(self, web_only=False):
         with self.lock:
             row = self.db.execute(
                 """SELECT * FROM jobs WHERE
                 state IN ('received','processing','creating','attaching') AND next_at<=?
-                ORDER BY created_at,id LIMIT 1""",
-                (time.time(),),
+                AND (?=0 OR adapter='web') ORDER BY created_at,id LIMIT 1""",
+                (time.time(), int(web_only)),
             ).fetchone()
             return dict(row) if row else None
 
@@ -377,7 +378,7 @@ class Store:
         with self.lock:
             return bool(
                 self.db.execute(
-                    "SELECT 1 FROM jobs WHERE state NOT IN ('done','cancelled') LIMIT 1"
+                    "SELECT 1 FROM jobs WHERE adapter<>'web' AND state NOT IN ('done','cancelled') LIMIT 1"
                 ).fetchone()
                 or self.db.execute("SELECT 1 FROM inbox WHERE done=0 LIMIT 1").fetchone()
                 or self.db.execute("SELECT 1 FROM outbox WHERE done=0 LIMIT 1").fetchone()

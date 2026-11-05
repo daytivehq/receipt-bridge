@@ -167,10 +167,13 @@ def run(path):
                     ready.set()
                 else:
                     ready.clear()
-                if not ready.is_set():
+                common = admin.readiness()
+                if not (common["ledger"] and common["ai"]) or (
+                    settings.web_enabled and admin.setup_required()
+                ):
                     stop.wait(1)
                     continue
-                if not service.tick():
+                if not service.tick(telegram_ready=ready.is_set()):
                     stop.wait(0.5)
             except Exception:
                 log.error("Worker failed; queued work remains on disk")

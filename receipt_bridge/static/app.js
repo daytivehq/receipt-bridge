@@ -3,6 +3,7 @@ const $ = (s) => document.querySelector(s);
 const names = {
   dashboard: "대시보드",
   jobs: "작업 내역",
+  upload: "사진 업로드",
   logs: "로그 조회",
   settings: "서비스 설정",
 };
@@ -20,6 +21,7 @@ const states = {
 };
 const paths = {
   dashboard: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+  upload: "M12 16V3 M7 8l5-5 5 5 M4 15v6h16v-6",
   jobs: "M6 3h12v18l-3-2-3 2-3-2-3 2z M9 7h6 M9 11h6 M9 15h4",
   logs: "M4 4h16v16H4z M8 8h8 M8 12h8 M8 16h4",
   settings:
@@ -161,6 +163,8 @@ function toast(message) {
   toast.timer = setTimeout(() => ($("#toast").hidden = true), 5000);
 }
 let setupRequired = false;
+let uploadAbort = null;
+let detailId = null, detailRequest = 0, detailTimer = null;
 let csrf = "",
   page = "dashboard",
   overview = null,
@@ -199,12 +203,10 @@ function setupMode(required) {
   $("#login-description").textContent = required
     ? "관리 비밀번호를 만들어 서비스를 시작하세요. 12자 이상으로 입력해 주세요."
     : "서비스 현황과 설정을 한곳에서 관리하세요.";
-  $("#password-confirm-row").hidden = !required;
-  $("#password-confirm").required = required;
-  $("#password").autocomplete = required ? "new-password" : "current-password";
-  $('#login-form button[type="submit"]').textContent = required
-    ? "관리 비밀번호 만들기"
-    : "운영 화면 열기 ↗";
+  $("#login-form").hidden = required;
+  $("#setup-form").hidden = !required;
+  for (const input of $("#setup-form").querySelectorAll("input")) input.disabled = !required;
+  $("#password").disabled = required;
 }
 function showLogin() {
   document.querySelectorAll(".secret-control").forEach((control) => {
@@ -222,6 +224,14 @@ function showLogin() {
     button.title = button.getAttribute("aria-label");
     button.replaceChildren(icon("eye"));
   });
+  uploadAbort?.abort();
+  uploadAbort = null;
+  $("#content").replaceChildren();
+  detailId = null;
+  detailRequest++;
+  clearTimeout(detailTimer);
+  $("#detail").close();
+  $("#detail-body").replaceChildren();
   $("#app").hidden = true;
   $("#login").hidden = false;
   csrf = "";
@@ -453,7 +463,7 @@ async function dashboard() {
           {},
           status.paused
             ? "새로 받은 메시지는 보관하고, 다음 영수증 처리는 기다립니다."
-            : `전체 ${summary.total}건의 영수증 중 ${c.done || 0}건을 저장했어요. 확인 대기 ${c.waiting || 0}건은 텔레그램에서 이어가세요.`,
+            : `전체 ${summary.total}건의 영수증 중 ${c.done || 0}건을 저장했어요. 확인 대기 ${c.waiting || 0}건은 작업 내역에서 확인·저장하세요.`,
         ),
       ),
       el(
@@ -645,6 +655,101 @@ function pagination(result, change) {
     ),
   );
 }
+function uploadKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+async function upload() {
+  const content = $("#content");
+  content.replaceChildren(head("사진 업로드", "영수증을 분석하고 이 화면에서 확인·수정·저장하세요."));
+  const feedback = el("p", { id: "upload-feedback", role: "status" });
+  const account = el("select", { id: "upload-account", required: "" });
+  const files = el("input", { id: "upload-files", type: "file", accept: "image/jpeg,image/png,image/webp", multiple: "", required: "" });
+  const caption = el("textarea", { id: "upload-caption", maxlength: "4096", placeholder: "예: 식비로 분류해줘" });
+  const list = el("div", { id: "upload-results", class: "upload-results" });
+  const button = el("button", { type: "submit", class: "primary", disabled: "" }, "분석 시작");
+  const form = el("form", { id: "upload-form", class: "upload-form" },
+    el("div", { class: "field" }, el("label", { for: account.id }, "저장 계좌"), account),
+    el("div", { class: "field" }, el("label", { for: files.id }, "영수증 사진 · 여러 장 선택 가능"), files),
+    el("div", { class: "field" }, el("label", { for: caption.id }, "사진 설명 (선택)"), caption,
+      el("small", {}, "여러 장을 선택하면 같은 설명을 각 사진에 적용합니다.")),
+    el("p", {}, "JPG·PNG·WebP를 최대 20장까지 업로드합니다. 분석 후 확인·저장을 눌러야 가계부에 등록됩니다."),
+    feedback, button, list,
+  );
+  content.append(card("영수증 선택", form));
+  let entries = [];
+  let ready = false;
+  let limit = 20;
+  try {
+    const [data, config] = await Promise.all([api("/api/accounts"), api("/api/settings")]);
+    if (page !== "upload") return;
+    setStatus(data.status);
+    limit = config.settings.max_download_mb;
+    account.append(...data.accounts.map((item) => el("option", { value: item.id }, `${item.name} · ${item.currency}`)));
+    ready = data.status.web_ready ?? data.status.ready;
+    button.disabled = !ready || !data.accounts.length;
+    feedback.textContent = !data.accounts.length ? "저장 가능한 계좌가 없습니다. 가계부 앱 비밀번호의 계좌·권한을 확인하세요."
+      : !ready ? "서비스 설정에서 가계부와 AI 설정을 완료하세요. Telegram 설정은 필요하지 않습니다."
+      : data.status.paused ? "처리가 일시정지되어 있습니다. 접수 후 대시보드에서 처리를 재개하세요."
+      : `사진 한 장당 ${limit}MB 이하입니다. 사진별로 차례로 분석합니다.`;
+  } catch (error) { feedback.textContent = error.message; }
+  files.addEventListener("change", () => { entries = []; list.replaceChildren(); button.textContent = "분석 시작"; button.disabled = !ready; });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!ready || uploadAbort) return;
+    const selected = Array.from(files.files || []);
+    if (!selected.length || selected.length > 20 || selected.some((file) => file.size > limit * 1024 * 1024)) {
+      feedback.textContent = `사진을 1~20장 선택하세요. 한 장당 ${limit}MB 이하입니다.`;
+      return;
+    }
+    const chosenAccount = account.value;
+    const chosenCaption = caption.value.trim();
+    if (!entries.length) entries = selected.map((file) => ({ file, key: uploadKey(), account: chosenAccount, caption: chosenCaption }));
+    if (entries.some((entry) => !entry.id && (entry.account !== chosenAccount || entry.caption !== chosenCaption))) {
+      feedback.textContent = "실패한 업로드는 같은 계좌·설명으로 재시도하세요. 내용을 바꾸려면 사진을 다시 선택하세요.";
+      return;
+    }
+    const controller = new AbortController();
+    uploadAbort = controller;
+    dirty = true;
+    button.disabled = true;
+    for (const input of [files, account, caption]) input.disabled = true;
+    try {
+      for (const entry of entries) {
+        if (entry.id) continue;
+        const row = entry.row || el("div", { class: "upload-result" });
+        entry.row = row;
+        list.append(row);
+        row.textContent = entry.file.name + " · 업로드 중…";
+        try {
+          const body = new FormData();
+          body.append("account", entry.account);
+          body.append("caption", entry.caption);
+          body.append("file", entry.file);
+          const response = await fetch("/api/uploads", { method: "POST", headers: { "X-CSRF-Token": csrf, "Idempotency-Key": entry.key }, body, signal: controller.signal });
+          const data = await response.json();
+          if (!response.ok) {
+            if (response.status === 401) showLogin();
+            throw Error(data.error || "사진 업로드에 실패했습니다.");
+          }
+          entry.id = data.id;
+          row.replaceChildren(el("span", {}, entry.file.name + " · 분석 대기"), el("button", { type: "button", class: "button", onclick: () => showDetail(entry.id) }, "처리 결과 보기"));
+        } catch (error) {
+          row.textContent = entry.file.name + " · " + (controller.signal.aborted ? "업로드 중지" : error.message);
+          if (controller.signal.aborted) break;
+        }
+      }
+      if (page === "upload" && csrf) feedback.textContent = `${entries.filter((entry) => entry.id).length}/${entries.length}장 접수했습니다. 처리 결과 보기에서 분석 결과를 확인하세요.`;
+    } finally {
+      if (uploadAbort === controller) uploadAbort = null;
+      if (page === "upload") dirty = false;
+      for (const input of [files, account, caption]) input.disabled = false;
+      button.disabled = entries.length > 0 && entries.every((entry) => entry.id);
+      button.textContent = entries.some((entry) => !entry.id) ? "실패한 사진 다시 업로드" : "업로드 완료";
+    }
+  });
+}
+
 async function jobs(filters) {
   const content = $("#content");
   if (!filters) {
@@ -1016,15 +1121,18 @@ async function loadLogs() {
     }),
   );
 }
-async function showDetail(id) {
+async function showDetail(id, refresh = false) {
+  if (!refresh) detailId = id;
+  const request = ++detailRequest;
   try {
     const job = await api("/api/jobs/" + encodeURIComponent(id));
+    if (request !== detailRequest || detailId !== id || (refresh && !$("#detail").open)) return;
     const body = $("#detail-body");
     body.replaceChildren(
       el(
         "div",
         { class: "notice" },
-        "이 화면은 조회용입니다. 영수증 수정·확인·취소·재시도는 텔레그램에서 진행하세요.",
+        "분석 결과를 확인하고 수정·저장할 수 있습니다. 가계부 저장은 확인·저장을 눌러 진행하세요.",
       ),
     );
     const ex = job.extraction || {};
@@ -1043,6 +1151,8 @@ async function showDetail(id) {
     ])
       facts.append(el("dt", {}, label), el("dd", {}, value));
     if (job.error) body.append(el("div", { class: "notice warn" }, job.error));
+    for (const warning of job.warnings || []) body.append(el("p", { class: "notice warn" }, warning));
+    if ((job.duplicates || []).length) body.append(el("p", { class: "notice warn" }, "중복 후보: " + job.duplicates.map((item) => item.id).join(", ") + " · 기존 거래를 먼저 확인하세요."));
     const images = el("div");
     if (job.has_image || job.has_original) {
       const select = el(
@@ -1088,14 +1198,75 @@ async function showDetail(id) {
         ),
       ),
     );
+    body.append(jobControls(job));
     if (!$("#detail").open) $("#detail").showModal();
+    clearTimeout(detailTimer);
+    if (["received", "processing", "creating", "attaching"].includes(job.state))
+      detailTimer = setTimeout(() => showDetail(id, true), 2000);
   } catch (e) {
-    toast(e.message);
+    if (detailId === id) toast(e.message);
   }
+}
+function jobControls(job) {
+  const controls = el("div", { class: "job-controls" });
+  const error = el("p", { role: "alert", class: "error-message" });
+  async function control(action, values) {
+    const data = await api(`/api/jobs/${encodeURIComponent(job.id)}/control`, { action, revision: job.revision ?? 0, ...(values ? { values } : {}) });
+    if (detailId === data.id && $("#detail").open) await showDetail(data.id);
+  }
+  function action(label, name, primary = false) {
+    const button = el("button", { type: "button", class: primary ? "primary" : "button", "data-job-action": name }, label);
+    button.addEventListener("click", async () => {
+      if (name === "confirm" && !confirm("이 내용으로 가계부에 거래를 등록할까요?")) return;
+      button.disabled = true;
+      try { await control(name); }
+      catch (err) { error.textContent = err.message; button.disabled = false; }
+    });
+    controls.append(button);
+  }
+  if (job.state === "waiting") action("확인·저장", "confirm", true);
+  const editable = ["waiting", "failed"].includes(job.state) && !job.posting_id;
+  if (editable && job.extraction) {
+    const edit = el("button", { type: "button", class: "button" }, "거래 정보 수정");
+    edit.addEventListener("click", async () => {
+      edit.disabled = true;
+      try {
+        const data = await api(`/api/jobs/${encodeURIComponent(job.id)}/categories`);
+        const ex = job.extraction;
+        const form = el("form", { class: "job-edit-form" });
+        for (const [key, label, type] of [["merchant", "상호명", "text"], ["amount", "결제 금액", "text"], ["date", "결제 날짜", "date"], ["time", "결제 시간 (선택)", "time"], ["currency", "통화 코드", "text"]]) {
+          const input = el("input", { id: "edit-" + key, name: key, type, value: ex[key] || "", step: key === "time" ? "60" : null, inputmode: key === "amount" ? "decimal" : null });
+          form.append(el("div", { class: "field" }, el("label", { for: input.id }, label), input));
+        }
+        const category = el("select", { id: "edit-category", name: "category" }, el("option", { value: "" }, "분류를 선택하세요"), ...data.categories.map((item) => el("option", { value: item.code, selected: item.code === ex.category ? "" : null }, item.name)));
+        form.append(el("div", { class: "field" }, el("label", { for: category.id }, "분류"), category), el("p", {}, "사진·설명이 다르면 사용할 값을 입력하세요. 수정 저장 후 확인·저장을 눌러 등록합니다."), el("button", { type: "submit", class: "primary" }, "이 값으로 수정"));
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const values = Object.fromEntries(["merchant", "amount", "date", "time", "currency", "category"].map((key) => [key, form.elements.namedItem(key).value.trim() || null]));
+          const submit = form.querySelector('button[type="submit"]');
+          submit.disabled = true;
+          try { await control("edit", values); }
+          catch (err) { error.textContent = err.message; submit.disabled = false; }
+        });
+        controls.append(form);
+        edit.remove();
+      } catch (err) { error.textContent = err.message; edit.disabled = false; }
+    });
+    controls.append(edit);
+  }
+  if (["waiting", "failed"].includes(job.state) && !job.posting_id) action("취소", "cancel");
+  if (["failed", "create_failed", "attach_failed"].includes(job.state)) action(job.state === "attach_failed" ? "사진 첨부 재시도" : "실패 단계 재시도", "retry");
+  if (["received", "processing", "creating", "attaching"].includes(job.state)) {
+    const refresh = el("button", { type: "button", class: "button", onclick: () => showDetail(job.id) }, "처리 상태 새로고침");
+    controls.append(el("p", {}, "처리 중입니다. 잠시 후 상태를 새로고침하세요."), refresh);
+  }
+  controls.append(error);
+  return controls;
 }
 const pagePaths = {
   dashboard: "/dashboard",
   jobs: "/jobs",
+  upload: "/upload",
   logs: "/logs",
   settings: "/settings",
 };
@@ -1112,9 +1283,10 @@ async function navigate(next, { mode = "push", index = historyIndex } = {}) {
   if (
     dirty &&
     next !== page &&
-    !confirm("저장하지 않은 설정이 있습니다. 화면을 이동할까요?")
+    !confirm("저장하지 않은 입력이 있습니다. 화면을 이동할까요?")
   )
     return false;
+  if (page === "upload" && next !== page) uploadAbort?.abort();
   page = next in names ? next : "dashboard";
   dirty = false;
   if (mode === "pop") historyIndex = index;
@@ -1132,7 +1304,7 @@ async function navigate(next, { mode = "push", index = historyIndex } = {}) {
     b.setAttribute("aria-current", b.dataset.page === page ? "page" : "false");
   });
   try {
-    await { dashboard, jobs, logs, settings }[page]();
+    await { dashboard, jobs, logs, settings, upload }[page]();
   } catch (e) {
     toast(e.message);
   }
@@ -1146,37 +1318,45 @@ $(".brand").addEventListener("click", (e) => {
   e.preventDefault();
   navigate("dashboard");
 });
-$("#login-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const button = $('#login-form button[type="submit"]');
+let loginPending = false;
+async function submitLogin(event, setup) {
+  event.preventDefault();
+  if (loginPending || setup !== setupRequired) return;
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  const password = $(setup ? "#setup-password" : "#password");
+  const error = $(setup ? "#setup-error" : "#login-error");
+  loginPending = true;
   button.disabled = true;
   try {
-    if (setupRequired && $("#password").value !== $("#password-confirm").value)
+    if (setup && password.value !== $("#password-confirm").value)
       throw Error("비밀번호 확인이 일치하지 않습니다.");
-    const data = await api(setupRequired ? "/api/setup" : "/api/login", {
-      password: $("#password").value,
-      ...(setupRequired ? { confirmation: $("#password-confirm").value } : {}),
+    const data = await api(setup ? "/api/setup" : "/api/login", {
+      password: password.value,
+      ...(setup ? { confirmation: $("#password-confirm").value } : {}),
     });
     csrf = data.csrf;
-    $("#password").value = "";
+    password.value = "";
     $("#password-confirm").value = "";
-    $("#login-error").textContent = "";
+    error.textContent = "";
     $("#login").hidden = true;
     $("#app").hidden = false;
     await navigate(pageFromPath(), { mode: "replace" });
   } catch (err) {
-    $("#login-error").textContent = err.message;
+    error.textContent = err.message;
     if (err.status === 409) {
-      api("/api/session")
-        .then((session) => setupMode(Boolean(session.setup_required)))
-        .catch(() => {});
+      api("/api/session").then((session) => setupMode(Boolean(session.setup_required))).catch(() => {});
     }
   } finally {
+    loginPending = false;
     button.disabled = false;
   }
-});
+}
+$("#login-form").addEventListener("submit", (event) => submitLogin(event, false));
+$("#setup-form").addEventListener("submit", (event) => submitLogin(event, true));
 for (const [id, label] of [
   ["password", "관리 비밀번호"],
+  ["setup-password", "새 관리 비밀번호"],
   ["password-confirm", "비밀번호 확인"],
 ]) {
   const input = $("#" + id);
@@ -1211,6 +1391,11 @@ $("#refresh").addEventListener("click", () => {
   navigate(page);
 });
 $("#close-detail").addEventListener("click", () => $("#detail").close());
+$("#detail").addEventListener("close", () => {
+  detailId = null;
+  detailRequest++;
+  clearTimeout(detailTimer);
+});
 window.addEventListener("popstate", async (event) => {
   if (restoringHistory) {
     restoringHistory = false;

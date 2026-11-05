@@ -22,6 +22,9 @@ from . import __version__
 from .ai import runner_setup
 from .auth import password_hash, password_matches
 from .config import CREDENTIAL_FIELDS, Settings, configured, telegram_identity, valid_runner_token
+from .ledger import RemoteError
+from .models import Extraction
+from .web_jobs import WebJobs, parse_upload
 
 EDITABLE = {
     "timezone",
@@ -89,6 +92,7 @@ class AdminState:
         self.base, self.store, self.demo = base, store, demo
         self.lock = threading.RLock()
         self.config_lock = threading.RLock()
+        self.upload_gate = threading.BoundedSemaphore(1)
         self.started = time.time()
         self.last_poll = None
         self.last_poll_error = None
@@ -150,11 +154,19 @@ class AdminState:
         with self.lock:
             settings = self.effective()
             checks = self.readiness(settings)
+            web_ready = checks["ledger"] and checks["ai"]
+            missing = self.missing_settings(settings)
+            telegram_missing = [item for item in missing if item.startswith("메신저")]
             return {
                 "demo": self.demo,
                 "checks": checks,
-                "missing": self.missing_settings(settings),
-                "ready": all(checks.values()),
+                "web_ready": web_ready,
+                "telegram_ready": all(checks.values()),
+                "missing": [item for item in missing if not item.startswith("메신저")]
+                if settings.web_enabled
+                else missing,
+                "telegram_missing": telegram_missing,
+                "ready": web_ready if settings.web_enabled else all(checks.values()),
                 "paused": self.store.setting("paused", False),
                 "started_at": self.started,
                 "last_poll": self.last_poll,
@@ -293,6 +305,7 @@ def make_server(state: AdminState, host=None, port=None):
             fields = (
                 "id",
                 "state",
+                "revision",
                 "account",
                 "attempts",
                 "error",
@@ -306,6 +319,7 @@ def make_server(state: AdminState, host=None, port=None):
                 "reference_date",
                 "batch_size",
                 "part",
+                "adapter",
             )
             result = {key: job[key] for key in fields}
             result["extraction"] = json.loads(job["extraction"]) if job["extraction"] else None
@@ -314,6 +328,10 @@ def make_server(state: AdminState, host=None, port=None):
                 bool(job["original"]),
             )
             result["events"] = state.store.job_events(job["id"])
+            result["warnings"] = (
+                Extraction.model_validate_json(job["extraction"]).warnings if job["extraction"] else []
+            )
+            result["duplicates"] = state.store.duplicates(job["id"], job["fingerprint"], job["image_hash"])
             return result
 
         def do_GET(self):
@@ -327,7 +345,7 @@ def make_server(state: AdminState, host=None, port=None):
                     "/favicon.ico": ("favicon.svg", "image/svg+xml"),
                     "/style.css": ("style.css", "text/css; charset=utf-8"),
                 }
-                if path in {"/dashboard", "/jobs", "/logs", "/settings"}:
+                if path in {"/dashboard", "/jobs", "/logs", "/settings", "/upload"}:
                     path = "/"
                 if path in files:
                     name, mime = files[path]
@@ -365,6 +383,14 @@ def make_server(state: AdminState, host=None, port=None):
                             "settings": state.public_settings(),
                         },
                     )
+                if path == "/api/accounts":
+                    return self.json(
+                        200,
+                        {
+                            "accounts": WebJobs(state.effective(), state.store).accounts(),
+                            "status": state.status(),
+                        },
+                    )
                 if path == "/api/jobs":
                     return self.json(200, state.store.browse_jobs(arg("state"), arg("search"), page))
                 if path == "/api/logs":
@@ -388,6 +414,10 @@ def make_server(state: AdminState, host=None, port=None):
                     job = state.store.get(parts[2]) if len(parts) >= 3 else None
                     if not job:
                         return self.json(404, {"error": "작업을 찾지 못했습니다"})
+                    if len(parts) == 4 and parts[3] == "categories":
+                        return self.json(
+                            200, {"categories": WebJobs(state.effective(), state.store).categories(job)}
+                        )
                     if len(parts) == 4 and parts[3] in {"original", "image"}:
                         return self.serve_job_image(job, parts[3])
                     if len(parts) == 3:
@@ -402,6 +432,8 @@ def make_server(state: AdminState, host=None, port=None):
                         else "요청 값을 확인하세요"
                     },
                 )
+            except RemoteError:
+                self.json(502, {"error": "가계부 연결·앱 비밀번호·계좌 권한을 확인하세요"})
             except KeyError:
                 self.json(400, {"error": "요청 값을 확인하세요"})
             except Exception:
@@ -446,15 +478,53 @@ def make_server(state: AdminState, host=None, port=None):
                 f"rb_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200{secure}",
             )
 
+        def upload(self):
+            if self.headers.get("Content-Type", "").split(";")[0] != "multipart/form-data":
+                return self.json(415, {"error": "파일 업로드 형식이 필요합니다"})
+            settings = state.effective()
+            length = int(self.headers.get("Content-Length", "0"))
+            if (
+                self.headers.get("Transfer-Encoding")
+                or not 0 < length <= settings.max_download_mb * 1024 * 1024 + 20000
+            ):
+                return self.json(413, {"error": "사진 수신 한도를 확인하세요"})
+            if not state.upload_gate.acquire(blocking=False):
+                return self.json(429, {"error": "다른 사진을 업로드 중입니다. 잠시 후 다시 시도하세요"})
+            try:
+                self.connection.settimeout(30)
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise ValueError("사진 업로드가 완료되지 않았습니다")
+                fields = parse_upload(self.headers["Content-Type"], body)
+                # Serialize with credential changes so an accepted upload uses one config snapshot.
+                with state.config_lock:
+                    job = WebJobs(state.effective(), state.store).upload(
+                        self.headers.get("Idempotency-Key", ""),
+                        fields["file"],
+                        fields["account"],
+                        fields.get("caption", ""),
+                    )
+                return self.json(200, {"id": job["id"], "state": job["state"]})
+            finally:
+                state.upload_gate.release()
+
         def do_POST(self):
             try:
-                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-                    return self.json(415, {"error": "JSON 요청이 필요합니다"})
                 origin = self.headers.get("Origin")
                 if origin and urlsplit(origin).netloc != self.headers.get("Host"):
                     return self.json(403, {"error": "다른 사이트의 요청은 허용하지 않습니다"})
                 if self.headers.get("Sec-Fetch-Site") == "cross-site":
                     return self.json(403, {"error": "다른 사이트의 요청은 허용하지 않습니다"})
+                path = urlsplit(self.path).path
+                if path == "/api/uploads":
+                    session = self.session()
+                    if not session:
+                        return self.json(401, {"error": "로그인이 필요합니다"})
+                    if not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), session[1]["csrf"]):
+                        return self.json(403, {"error": "화면을 새로고침하고 다시 시도하세요"})
+                    return self.upload()
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    return self.json(415, {"error": "JSON 요청이 필요합니다"})
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 32000:
                     return self.json(413, {"error": "요청 크기를 확인하세요"})
@@ -470,6 +540,11 @@ def make_server(state: AdminState, host=None, port=None):
                     return self.json(401, {"error": "로그인이 필요합니다"})
                 if not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), session[1]["csrf"]):
                     return self.json(403, {"error": "화면을 새로고침하고 다시 시도하세요"})
+                parts = path.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "control":
+                    with state.config_lock:
+                        job = WebJobs(state.effective(), state.store).control(parts[2], data)
+                        return self.json(200, self.job_detail(job))
                 if path == "/api/logout":
                     with auth_lock:
                         sessions.pop(session[0], None)
@@ -495,6 +570,8 @@ def make_server(state: AdminState, host=None, port=None):
                     state.store.log("info", "admin", "처리 일시정지" if data["paused"] else "처리 재개")
                     return self.json(200, state.status())
                 self.json(404, {"error": "없는 경로입니다"})
+            except RemoteError:
+                self.json(502, {"error": "가계부 연결·앱 비밀번호·계좌 권한을 확인하세요"})
             except ValidationError as exc:
                 fields = ", ".join(
                     ".".join(map(str, error["loc"])) for error in exc.errors(include_input=False)

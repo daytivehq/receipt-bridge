@@ -240,7 +240,15 @@ def test_legacy_database_migration_keeps_frozen_jobs(tmp_path):
     store.close()
     # SQLite supports dropping newly added columns, reproducing the previous schema.
     with sqlite3.connect(path) as db:
-        for column in ("input_kind", "input_text", "reference_date", "conflicts", "batch_size", "part"):
+        for column in (
+            "input_kind",
+            "input_text",
+            "reference_date",
+            "conflicts",
+            "batch_size",
+            "part",
+            "upload_digest",
+        ):
             db.execute("ALTER TABLE jobs DROP COLUMN " + column)
     reopened = Store(path)
     try:

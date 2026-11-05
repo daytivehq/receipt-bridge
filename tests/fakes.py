@@ -11,7 +11,14 @@ from PIL import Image, ImageDraw
 
 from receipt_bridge.models import Extraction
 
-ACCOUNT = {"id": "test-account", "currency": "KRW", "scale": 0, "archived": False, "role": "owner"}
+ACCOUNT = {
+    "name": "테스트 계좌",
+    "id": "test-account",
+    "currency": "KRW",
+    "scale": 0,
+    "archived": False,
+    "role": "owner",
+}
 CATEGORIES = [{"code": "food", "name": "식비", "kind": "expense", "hidden": False}]
 
 

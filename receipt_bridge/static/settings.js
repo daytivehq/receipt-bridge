@@ -533,6 +533,11 @@ function settingsStatusCard(status) {
             ...missing.map((item) => el("li", {}, item)),
           )
         : el("p", {}, "필수 입력이 완료되었습니다."),
+      status.telegram_ready === false ? el("div", {},
+        el("strong", {}, "Telegram 연결 (선택)"),
+        el("p", {}, "웹 사진 업로드에는 필요하지 않습니다. Telegram을 사용할 때 아래 항목을 설정하세요."),
+        el("ul", {}, ...(status.telegram_missing || []).map((item) => el("li", {}, item))),
+      ) : null,
       el(
         "p",
         {},

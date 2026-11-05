@@ -112,8 +112,12 @@ class Settings(BaseModel):
     def check_runtime(self):
         if self.ai_provider != "ollama" and not self.allow_external_ai:
             raise ValueError("외부 CLI AI에는 allow_external_ai=true가 필요합니다")
-        if not all(self.readiness().values()):
-            raise ValueError("접속 키·허용 사용자·채팅·저장 계좌·AI 설정을 확인하세요")
+        checks = self.readiness()
+        ready = (checks["ledger"] and checks["ai"]) if self.web_enabled else all(checks.values())
+        if not ready:
+            raise ValueError(
+                "가계부·AI 설정을 확인하세요. 메신저 사용 시 접속 키·허용 사용자·계좌 설정도 필요합니다"
+            )
 
 
 def load_settings(path: str | Path = "config.toml") -> Settings:

@@ -49,6 +49,16 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
     else if(path==='/api/control')body={...status,paused:JSON.parse(options.body).paused};
     else if(path.startsWith('/api/jobs?'))body={items:[job],total:1,page:1,page_size:20};
     else if(path.startsWith('/api/logs?'))body={items:[{id:1,at:Date.parse('2026-11-02T15:11:00Z')/1000,level:'info',message:'테스트 로그',job_id:job.id}],total:1,page:1,page_size:50,timezone:'Asia/Seoul'};
+    else if(path==='/api/accounts')body={accounts:[{id:'test-account',name:'테스트 계좌',currency:'KRW'}],status:{...responseStatus,web_ready:true}};
+    else if(path==='/api/uploads')body={id:'test-job',state:'received'};
+    else if(path==='/api/jobs/test-job/categories')body={categories:[{code:'food',name:'식비'}]};
+    else if(path==='/api/jobs/test-job/control'){
+      const data=JSON.parse(options.body);
+      if(data.action==='edit')detailJob={...detailJob,revision:(detailJob.revision||0)+1,extraction:{...detailJob.extraction,...data.values}};
+      if(data.action==='confirm')detailJob={...detailJob,state:'creating'};
+      if(data.action==='cancel')detailJob={...detailJob,state:'cancelled'};
+      body=detailJob;
+    }
     else if(path==='/api/jobs/test-job')body=detailJob;
     else throw Error('Unexpected API request '+path);
     return {ok:true,status:200,json:async()=>structuredClone(body)};
@@ -83,7 +93,7 @@ test('login, dashboard, navigation and safe rendering of receipt content',async(
   d.querySelector('tr[data-id]').click();
   await flush();
   assert.equal(d.querySelector('#detail').open,true);
-  assert.match(d.querySelector('#detail-body').textContent,/조회용/);
+  assert.match(d.querySelector('#detail-body').textContent,/확인·저장/);
   d.querySelector('#close-detail').click();
   d.querySelector('[data-page="logs"]').click();
   await flush();
@@ -130,14 +140,14 @@ test('first visitor sets and confirms the administrator password on screen', asy
   const d=w.document;
   assert.match(d.querySelector('#login-heading').textContent,/처음/);
   assert.equal(d.querySelector('#password-confirm-row').hidden,false);
-  d.querySelector('#password').value='FIRST_ADMIN_PASSWORD';
+  d.querySelector('#setup-password').value='FIRST_ADMIN_PASSWORD';
   d.querySelector('#password-confirm').value='WRONG';
-  d.querySelector('#login-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  d.querySelector('#setup-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
   await flush();
-  assert.match(d.querySelector('#login-error').textContent,/일치/);
+  assert.match(d.querySelector('#setup-error').textContent,/일치/);
   assert.equal(requests.some(r=>r.path==='/api/setup'),false);
   d.querySelector('#password-confirm').value='FIRST_ADMIN_PASSWORD';
-  d.querySelector('#login-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  d.querySelector('#setup-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
   await flush();
   const sent=requests.find(r=>r.path==='/api/setup');
   assert.equal(JSON.parse(sent.options.body).confirmation,'FIRST_ADMIN_PASSWORD');
@@ -498,6 +508,80 @@ test('text expense detail shows the original input safely without a missing-phot
   assert.equal(body.querySelector('.input-source').textContent,source);
   assert.equal(body.querySelectorAll('[onerror]').length,0);
   assert.equal(body.querySelectorAll('img').length,0);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+
+test('password-manager button click submits the login form without input events',async()=>{
+  const {dom,w,requests,errors}=await app();
+  const d=w.document;
+  const form=d.querySelector('#login-form');
+  assert.equal(form.method,'post');
+  assert.equal(form.getAttribute('action'),'/api/login');
+  assert.equal(form.querySelectorAll('input[type="password"]').length,1);
+  assert.equal(d.querySelector('#setup-form').hidden,true);
+  assert.equal(d.querySelector('#password-confirm').disabled,true);
+  d.querySelector('#password').value='TEST_ADMIN_PASSWORD';
+  d.querySelector('#login-submit').click();
+  await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/login').length,1);
+  assert.equal(d.querySelector('#app').hidden,false);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('browser uploads multiple photos with CSRF and distinct stable upload keys',async()=>{
+  const {dom,w,requests,errors}=await app();
+  await login(w);
+  const d=w.document;
+  d.querySelector('[data-page="upload"]').click();
+  await flush();
+  assert.equal(w.location.pathname,'/upload');
+  const files=[new w.File(['TEST_ONE'],'first.png',{type:'image/png'}),new w.File(['TEST_TWO'],'second.png',{type:'image/png'})];
+  Object.defineProperty(d.querySelector('#upload-files'),'files',{value:files,configurable:true});
+  d.querySelector('#upload-caption').value='식비';
+  d.querySelector('#upload-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const calls=requests.filter(r=>r.path==='/api/uploads');
+  assert.equal(calls.length,2);
+  assert.equal(new Set(calls.map(r=>r.options.headers['Idempotency-Key'])).size,2);
+  for(const call of calls){
+    assert.equal(call.options.headers['X-CSRF-Token'],'TEST_CSRF');
+    assert.equal(call.options.headers['Content-Type'],undefined);
+    assert.equal(call.options.body.get('account'),'test-account');
+    assert.equal(call.options.body.get('caption'),'식비');
+  }
+  assert.match(d.querySelector('#upload-feedback').textContent,/2\/2장/);
+  d.querySelector('#upload-results button').click();
+  await flush();
+  assert.equal(d.querySelector('#detail').open,true);
+  assert.ok(d.querySelector('[data-job-action="confirm"]'));
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('browser receipt editor preserves revision when confirming',async()=>{
+  const {dom,w,requests,errors}=await app();
+  await login(w);
+  const d=w.document;
+  d.querySelector('[data-page="jobs"]').click();
+  await flush();
+  d.querySelector('tr[data-id]').click();
+  await flush();
+  Array.from(d.querySelectorAll('#detail-body button')).find(b=>b.textContent==='거래 정보 수정').click();
+  await flush();
+  d.querySelector('#edit-amount').value='15000';
+  d.querySelector('.job-edit-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+  await flush();
+  const edit=requests.filter(r=>r.path==='/api/jobs/test-job/control').at(-1);
+  assert.equal(JSON.parse(edit.options.body).values.amount,'15000');
+  assert.equal(JSON.parse(edit.options.body).revision,0);
+  d.querySelector('[data-job-action="confirm"]').click();
+  await flush();
+  const confirm=requests.filter(r=>r.path==='/api/jobs/test-job/control').at(-1);
+  assert.equal(JSON.parse(confirm.options.body).action,'confirm');
+  assert.equal(JSON.parse(confirm.options.body).revision,1);
   assert.deepEqual(errors,[]);
   dom.window.close();
 });

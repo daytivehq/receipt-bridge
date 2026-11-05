@@ -53,6 +53,10 @@ docker compose start receipt-bridge
 
 ## 수정·재시도
 
+사진 여러 장은 각각 접수하고 차례로 분석합니다. 한 텍스트의 여러 지출도 작업 ID별로 확인·수정·취소합니다. 한 건을 확인해도 다른 건은 자동 저장되지 않습니다.
+
+사진 설명의 금액·날짜가 사진과 다르면 불일치 안내가 표시됩니다. `/edit 작업ID amount=5000` 또는 `/edit 작업ID date=2026-11-05`로 선택한 값을 입력해야 저장할 수 있습니다. 텍스트 원문·사진 설명은 작업 상세에서도 확인할 수 있습니다.
+
 Telegram에서 `/help`를 보내 명령을 확인합니다.
 
 | 명령 | 기능 |
@@ -75,8 +79,8 @@ Telegram에서 `/help`를 보내 명령을 확인합니다.
 먼저 데이터를 백업하고 실행합니다.
 
 ```bash
-docker compose pull receipt-bridge
-docker compose up -d --no-build receipt-bridge
+docker compose pull
+docker compose up -d --no-build
 docker compose logs --tail=50 receipt-bridge
 ```
 
@@ -86,11 +90,11 @@ docker compose logs --tail=50 receipt-bridge
 docker compose exec receipt-bridge python -c 'from receipt_bridge import __version__; print(__version__)'
 ```
 
-특정 버전을 쓰려면 Compose의 `image` 끝을 `:latest`에서 원하는 버전으로 바꿉니다. 예: `:0.1.1`. 저장소 기본 구성은 `.env`의 `RECEIPT_BRIDGE_IMAGE`로 지정할 수도 있습니다. 이전 버전으로 내릴 때는 릴리즈의 DB 호환성과 백업을 먼저 확인하세요.
+특정 버전을 쓰려면 두 서비스의 `image` 끝을 `:latest`에서 같은 버전으로 바꿉니다. 예: `:0.2.0`. 저장소 기본 구성은 `.env`의 `RECEIPT_BRIDGE_IMAGE`와 `AI_RUNNER_IMAGE`로 지정할 수도 있습니다. 이전 버전으로 내릴 때는 릴리즈의 DB 호환성과 백업을 먼저 확인하세요.
 
 같은 프로젝트 이름과 데이터 볼륨을 유지합니다. 파일이나 설치 위치를 바꾼다면 [기존 설치 유지](compose.md#기존-설치-유지)를 먼저 확인하세요. 기존 `.env`·`config.toml`을 예시 파일로 덮어쓰지 않습니다.
 
-CLI 분석 컨테이너의 업데이트는 [AI 연결 안내](ai-providers.md#실행업데이트)를 참고하세요.
+CLI 분석 컨테이너도 함께 내려받아 교체합니다. 소스 빌드는 필요 없습니다.
 
 ## 백업·복원
 
@@ -99,19 +103,23 @@ CLI 분석 컨테이너의 업데이트는 [AI 연결 안내](ai-providers.md#�
 ```bash
 mkdir -p backups
 chmod 700 backups
-docker compose stop receipt-bridge
+docker compose stop
 (umask 077; docker compose run --rm -T --no-deps --entrypoint tar receipt-bridge -C /data -czf - . > backups/receipt-data.tar.gz)
-docker compose start receipt-bridge
+(umask 077; docker compose run --rm -T --no-deps --entrypoint tar receipt-bridge -C /runner-auth -czf - . > backups/runner-auth.tar.gz)
+(umask 077; docker compose run --rm -T --no-deps --entrypoint tar ai-runner -C /ai-home -czf - . > backups/ai-home.tar.gz)
+docker compose start
 ```
 
-같은 이름으로 다시 백업하면 이전 백업을 덮어씁니다. 필요한 파일은 날짜별로 보관하세요. 별도로 사용하는 `.env`·`config.toml`·`secrets/ai-home`도 안전하게 백업합니다. **백업은 평문이므로 비공개 암호화 저장소에 보관하세요.** 서비스는 사진과 작업 기록을 자동 삭제하지 않습니다.
+같은 이름으로 다시 백업하면 이전 백업을 덮어씁니다. 필요한 파일은 날짜별로 보관하세요. 세 파일은 가계부 자료·자동 통신 토큰·AI 로그인 정보입니다. 별도로 사용하는 `.env`·`config.toml`·기존 인증 폴더도 안전하게 백업합니다. **백업은 평문이므로 비공개 암호화 저장소에 보관하세요.** 서비스는 사진과 작업 기록을 자동 삭제하지 않습니다.
 
 복원은 현재 데이터를 먼저 별도 백업한 뒤 진행합니다. **다음 명령은 같은 경로의 파일을 덮어씁니다.**
 
 ```bash
-docker compose stop receipt-bridge
+docker compose stop
 docker compose run --rm -T --no-deps --entrypoint tar receipt-bridge -C /data -xzf - < backups/receipt-data.tar.gz
-docker compose start receipt-bridge
+docker compose run --rm -T --no-deps --entrypoint tar receipt-bridge -C /runner-auth -xzf - < backups/runner-auth.tar.gz
+docker compose run --rm -T --no-deps --entrypoint tar ai-runner -C /ai-home -xzf - < backups/ai-home.tar.gz
+docker compose start
 ```
 
 **`docker compose down -v`는 데이터 볼륨의 DB와 원본 사진을 삭제합니다.**

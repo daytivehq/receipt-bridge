@@ -1,99 +1,78 @@
 # AI 연결
 
-| 제공자 | 전달 데이터 | 준비 사항 |
-| --- | --- | --- |
-| Ollama | 보정 사진 | 이미지 입력·JSON 스키마 출력을 지원하는 모델 |
-| Codex CLI | 보정 사진 | 전용 runner 설치와 Codex 인증 |
-| Claude Code CLI | 보정 사진 | 전용 runner와 Anthropic API 키. 구독 OAuth는 지원하지 않음 |
-| Antigravity CLI (`agy`) | 로컬 OCR 텍스트 | 전용 runner와 Google 로그인. 결과는 항상 확인 후 저장 |
+사진 설명과 지출 텍스트도 같은 AI를 사용합니다. 여러 지출은 공통 JSON 형식으로 나누어 검증하며, 항상 개별 확인 후 저장합니다.
 
-서비스 설정에서 제공자와 모델을 선택합니다. CLI 제공자에는 **외부 AI 전송 허용**이 필요합니다. 가계부 키·Telegram 토큰은 AI에 전달하지 않습니다.
+0.2.0부터 분석 이미지에 Codex·Claude·Antigravity CLI가 모두 포함됩니다. 제공자·모델·시간 제한은 **웹에서 변경하고 저장**하면 다음 작업부터 적용됩니다. `.env`에 제공자를 다시 입력하거나 CLI를 따로 빌드하지 않습니다.
+
+기본 Compose가 분석 서비스를 함께 시작하고, 통신용 토큰은 별도 볼륨에서 자동 생성·공유합니다. AI에는 가계부 키·Telegram 토큰·DB를 전달하지 않습니다.
+
+## 웹에서 설정
+
+1. 서비스 설정 → AI 분석에서 제공자와 모델 이름을 선택합니다.
+2. CLI를 사용한다면 외부 AI 전송 허용을 켭니다.
+3. 변경 사항 저장을 누릅니다.
+4. CLI의 **연결·설치 확인**으로 실행 상태를 확인합니다. Antigravity는 조회된 모델 버튼으로 모델 이름을 입력한 뒤 다시 저장할 수 있습니다.
+
+| 제공자 | 전송 데이터 | 최초 준비 |
+| --- | --- | --- |
+| Ollama | 보정 사진 | 별도 Ollama 서버에 이미지 입력을 지원하는 모델 설치 |
+| Codex CLI | 보정 사진 | 아래 명령으로 계정 로그인 |
+| Claude Code CLI | 보정 사진 | 웹에서 Claude API 키 저장. API 사용 요금 발생 가능 |
+| Antigravity CLI | 로컬 OCR 텍스트 | 아래 명령으로 Google 로그인. 항상 확인 후 저장 |
+
+CLI 분석 주소의 기본값은 `http://ai-runner:8090`입니다. 같은 Compose를 사용하면 바꾸지 않아도 됩니다. 다른 AI로 자동 우회 전송하지 않습니다.
 
 ## Ollama
 
-Ollama에 사용할 모델을 설치한 뒤 서비스 설정에 다음을 입력하세요.
+모델은 서버의 CPU·메모리·GPU에 맞게 직접 준비합니다. 웹에서 설치한 모델 이름과 컨테이너가 접근할 수 있는 Ollama 주소를 입력하세요. 예: `http://서버IP:11434`.
 
-- 제공자: Ollama
-- 모델: 설치한 이미지 분석 모델 이름
-- Ollama 주소: 컨테이너에서 접근 가능한 주소. 예: `http://서버IP:11434`
+컨테이너의 `127.0.0.1`은 호스트가 아닙니다. 주소 선택과 `host.docker.internal` 설정은 [Compose 안내](compose.md#연결-주소)를 참고하세요. Ollama 접근은 신뢰하는 장치로 제한합니다.
 
-Ollama가 컨테이너에서 접근 가능한 주소로 수신하고 있는지 확인하세요. Ollama 접근은 신뢰하는 장치로 제한합니다. 모델 크기는 홈서버의 CPU·메모리·GPU에 맞게 선택합니다.
+## 최초 CLI 인증
 
-`host.docker.internal`을 사용하려면 [주소 설정](compose.md#연결-주소)의 `extra_hosts`를 추가하세요.
+계정 로그인은 서비스가 대신 승인할 수 없습니다. 서버의 Compose 설치 폴더에서 한 번만 실행합니다. 이후 인증은 `ai-home` 볼륨에 보관되며, 제공자를 바꿀 때마다 다시 설치하지 않습니다.
 
-## CLI 공통 준비
-
-CLI는 가계부·원본·DB와 분리된 `ai-runner` 컨테이너에서 실행합니다. `secrets/ai-home`에는 AI 인증만 넣으며 개인 홈 전체를 연결하지 않습니다.
-
-이하 명령은 **저장소의 `compose.yaml`**을 기준으로 합니다. 새 설치라면 다음으로 준비합니다.
+### Antigravity
 
 ```bash
-git clone https://github.com/daytivehq/receipt-bridge.git
-cd receipt-bridge
-cp .env.example .env
-cp config.example.toml config.toml
-chmod 600 .env
+docker compose run --rm -e HOME=/ai-home -e SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" --entrypoint agy ai-runner
 ```
 
-이미 최소 구성으로 운영 중이라면 먼저 백업하고 [기존 데이터 유지 방법](compose.md#기존-설치-유지)에 따라 볼륨을 연결합니다. 기존 설치 폴더에 위 파일을 덮어쓰지 마세요. 이 구성의 기본 접속 주소는 `http://127.0.0.1:8092/`이며 포트는 `.env`의 `ADMIN_PORT`로 변경합니다.
+표시된 인증 주소를 본인 브라우저에서 열고 Google 로그인을 마칩니다. 표시된 인증 코드를 터미널에 입력한 뒤 CLI를 종료합니다. 이 명령의 SSH 환경값은 컨테이너에서 원격 로그인 안내를 표시하기 위한 것입니다.
 
-`.env`에 사용할 `AI_PROVIDER`와 해당 CLI 설치 버전을 지정합니다. 예: Antigravity라면 `AI_PROVIDER=agy`, `AGY_VERSION=사용할버전`입니다. 모델 이름은 웹 화면에서 설정합니다.
-
-runner 전용 토큰을 생성해 `.env`의 `AI_RUNNER_TOKEN`에 저장합니다. 가계부 키나 봇 토큰을 재사용하지 마세요.
+모델 목록은 웹의 연결 확인 버튼 또는 다음 명령으로 조회합니다.
 
 ```bash
-docker compose run --rm --no-deps --entrypoint python receipt-bridge -c 'import secrets; print(secrets.token_urlsafe(48))'
-mkdir -p secrets/ai-home
-sudo chown -R 10001:10001 secrets/ai-home
-sudo chmod -R go-rwx secrets/ai-home
-docker compose --profile cli build ai-runner
+docker compose run --rm -T -e HOME=/ai-home --entrypoint agy ai-runner models
 ```
 
-토큰은 브리지와 runner의 통신 인증에만 사용합니다. 변경하면 두 컨테이너를 다시 시작합니다. runner의 8090 포트는 외부에 공개하지 않습니다.
+**모델 목록은 로그인 전에도 조회될 수 있습니다.** 목록 조회 성공이 로그인 완료를 뜻하지는 않습니다. 계정의 모델 접근 권한·만료 여부는 실제 분석 시 확인됩니다.
 
-### Codex CLI
+Codex·Claude는 사진과 함께 입력한 설명도 해당 AI에 전달합니다. 텍스트만 보낸 메시지는 이미지 없이 텍스트만 전달합니다.
 
-`.env`에 `AI_PROVIDER=codex`, `CODEX_VERSION`을 지정합니다. 전용 컨테이너에서 파일로 저장되는 인증을 준비하세요.
+Antigravity에는 원본 사진 대신 로컬 OCR 텍스트를 보냅니다. OCR 결과가 없으면 중단하며, 숫자를 확인한 뒤 저장해야 합니다. `/logout`은 저장한 인증을 삭제합니다.
+
+### Codex
 
 ```bash
-docker compose --profile cli run --rm -e HOME=/ai-home -e CODEX_HOME=/ai-home/.codex --entrypoint codex ai-runner login --device-auth
+docker compose run --rm -e HOME=/ai-home -e CODEX_HOME=/ai-home/.codex --entrypoint codex ai-runner login --device-auth
 ```
 
-CLI는 읽기 전용 샌드박스에서 실행하며 명령 실행·웹 검색을 비활성화합니다. 선택한 모델의 이미지 입력 지원과 계정 접근 권한을 확인하세요.
+표시된 주소·코드로 로그인합니다. 웹의 연결 확인은 저장된 인증의 존재를 검사하며, 실제 모델 사용 권한까지 보장하지 않습니다.
 
-### Claude Code CLI
+### Claude
 
-`.env`에 `AI_PROVIDER=claude`, `CLAUDE_VERSION`을 지정합니다. `secrets/ai-home/anthropic-api-key`에 Anthropic API 키 한 줄을 넣고 컨테이너 UID `10001`만 읽도록 권한을 제한하세요.
+웹에서 Claude를 선택하고 설정을 저장한 뒤, AI 분석 영역에서 **Claude API 키 → API 키 저장**을 누릅니다. 키는 분석 전용 볼륨에 저장하며 브리지 DB에는 저장하지 않습니다. 키 입력란은 저장 후 비웁니다.
 
-이 연결은 `--bare` 모드이며 **API 과금 방식**입니다. 구독 로그인은 재사용하지 않습니다.
+이 서비스는 Claude의 `--bare` 모드를 사용하므로 API 키 방식입니다. 구독 OAuth 로그인은 사용하지 않습니다. 저장된 키의 실제 유효성은 분석 요청 시 확인됩니다.
 
-### Antigravity CLI
+## 연결이 안 될 때
 
-`.env`에 `AI_PROVIDER=agy`, `AGY_VERSION`을 지정합니다. 설치기는 배포 중인 버전을 내려받으며 지정 버전과 일치하지 않으면 빌드를 중단합니다.
+- **분석 서비스 연결 실패:** `docker compose ps`와 `docker compose logs --tail=50 ai-runner`로 실행 상태를 확인합니다.
+- **통신 인증 불일치:** 두 서비스가 같은 `runner-auth` 볼륨을 공유하는지 확인합니다. 기존 `AI_RUNNER_TOKEN`을 사용한다면 두 서비스에 같은 값을 지정해야 합니다.
+- **이전 이미지 안내:** 영수증·분석 이미지를 함께 업데이트합니다. 새 구성은 0.2.0 이상 두 이미지가 필요합니다.
+- **로그인·모델 오류:** 계정 로그인을 다시 확인하고 해당 계정에 허용된 모델을 선택합니다.
 
-```bash
-docker compose --profile cli run --rm -e HOME=/ai-home -e SSH_CONNECTION -e SSH_CLIENT -e SSH_TTY --entrypoint agy ai-runner
-```
+분석 서비스의 8090 포트와 Docker 소켓은 외부에 공개하지 않습니다.
 
-대화형 화면에서 직접 로그인하고 종료합니다. `/logout`을 실행하면 저장된 인증이 지워집니다. SSH에서 표시된 로그인 URL과 코드는 본인이 직접 처리하세요.
-
-```bash
-docker compose --profile cli run --rm -T -e HOME=/ai-home --entrypoint agy ai-runner models
-```
-
-출력된 모델 ID를 웹 화면에 입력합니다. 모델 제공 여부는 계정에 따라 다릅니다. 직접 이미지 입력은 사용하지 않으며 OCR 결과가 없으면 중단합니다. 전용 폴더의 권한 설정 파일은 서비스가 관리하므로 개인 플러그인·MCP 설정을 추가하지 마세요.
-
-## 실행·업데이트
-
-앞의 준비 단계에서 ai-runner를 빌드하고 인증한 뒤 실행합니다. 주 서비스는 GHCR의 `latest` 이미지를 사용하고 ai-runner만 로컬에서 빌드합니다.
-
-```bash
-docker compose pull receipt-bridge
-docker compose --profile cli up -d --no-build receipt-bridge ai-runner
-```
-
-웹 설정에서 CLI 제공자·모델, 분석 주소 `http://ai-runner:8090`, 외부 전송 허용을 설정합니다. runner에 설치된 제공자와 웹 설정의 제공자가 같아야 합니다.
-
-주 서비스 업데이트는 위의 `pull`·`up` 명령을 사용합니다. CLI 설치 버전을 변경하거나 릴리즈에서 runner 갱신을 안내하면 소스도 갱신하고 `docker compose --profile cli build ai-runner`로 다시 빌드한 뒤 `up` 명령을 실행합니다. runner는 GHCR에서 별도로 배포하지 않습니다.
-
-공식 문서: [Ollama](https://docs.ollama.com/capabilities/vision), [Codex](https://developers.openai.com/codex/noninteractive/), [Claude Code](https://code.claude.com/docs/en/headless), [Antigravity](https://antigravity.google/docs/cli/headless/).
+공식 문서: [Antigravity 인증](https://antigravity.google/docs/install/), [Antigravity headless](https://antigravity.google/docs/cli/headless/), [Codex CLI](https://developers.openai.com/codex/cli/reference/), [Claude headless](https://code.claude.com/docs/en/headless), [Ollama](https://docs.ollama.com/capabilities/vision).

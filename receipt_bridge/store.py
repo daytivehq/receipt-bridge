@@ -63,6 +63,19 @@ class Store:
                 next_at REAL NOT NULL DEFAULT 0);
         """)
 
+        # Additive migration: existing jobs, payloads and idempotency keys stay intact.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(jobs)")}
+        for name, definition in {
+            "input_kind": "TEXT NOT NULL DEFAULT 'image'",
+            "input_text": "TEXT NOT NULL DEFAULT ''",
+            "reference_date": "TEXT NOT NULL DEFAULT ''",
+            "conflicts": "TEXT NOT NULL DEFAULT '{}'",
+            "batch_size": "INTEGER NOT NULL DEFAULT 1",
+            "part": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+
     @contextmanager
     def tx(self):
         with self.lock:
@@ -109,15 +122,41 @@ class Store:
             # Do not retain message contents after their actions are durably recorded.
             db.execute("UPDATE inbox SET done=1,body='{}' WHERE update_id=?", (update_id,))
 
-    def create_job(self, chat, user, message, file_id, account, adapter="telegram"):
+    def create_job(
+        self,
+        chat,
+        user,
+        message,
+        file_id,
+        account,
+        adapter="telegram",
+        *,
+        input_kind="image",
+        input_text="",
+        reference_date="",
+    ):
         with self.tx() as db:
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
             db.execute(
                 """INSERT OR IGNORE INTO jobs
-                (id,chat,user,message,file_id,account,request_key,created_at,updated_at,adapter)
-                VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (job_id, chat, user, message, file_id, account, "rb-" + uuid.uuid4().hex, now, now, adapter),
+                (id,chat,user,message,file_id,account,request_key,created_at,updated_at,adapter,input_kind,input_text,reference_date)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    chat,
+                    user,
+                    message,
+                    file_id,
+                    account,
+                    "rb-" + uuid.uuid4().hex,
+                    now,
+                    now,
+                    adapter,
+                    input_kind,
+                    input_text,
+                    reference_date,
+                ),
             )
             row = db.execute(
                 "SELECT * FROM jobs WHERE chat=? AND message=? AND adapter=?", (chat, message, adapter)
@@ -245,7 +284,7 @@ class Store:
         if search:
             conditions.append("(instr(id,?)>0 OR instr(COALESCE(extraction,''),?)>0)")
             args.extend([search, search])
-        fields = "id,state,account,attempts,error,created_at,updated_at,extraction,posting_id,receipt_id"
+        fields = "id,state,account,attempts,error,created_at,updated_at,extraction,posting_id,receipt_id,input_kind,batch_size,part"
         result = self._browse_page("jobs", fields, "created_at DESC,id DESC", conditions, args, page, 20)
         for item in result["items"]:
             item["extraction"] = json.loads(item["extraction"]) if item["extraction"] else None

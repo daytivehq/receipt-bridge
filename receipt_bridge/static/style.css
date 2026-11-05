@@ -1390,3 +1390,12 @@ footer { width: 100%; justify-content: space-between; }
   .main-shell { min-height: calc(100vh - 67px); }
   footer { flex-wrap: wrap; }
 }
+
+.ai-setup { margin: 0 24px 24px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.ai-setup p { line-height: 1.7; }
+.ai-setup pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--soft); }
+.ai-model-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.ai-model-options button { font-size: 12px; }
+.ai-setup summary { cursor: pointer; margin-top: 12px; }
+
+.input-source { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--soft); border-radius: 8px; }

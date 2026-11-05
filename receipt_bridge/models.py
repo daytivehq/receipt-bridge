@@ -125,3 +125,8 @@ def auto_eligible(
         return Decimal(ex.subtotal) + Decimal(ex.tax) == Decimal(ex.amount)
     except Exception:
         return False
+
+
+class TextExtractions(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[Extraction] = Field(max_length=20)

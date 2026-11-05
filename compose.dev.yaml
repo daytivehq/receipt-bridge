@@ -11,11 +11,14 @@ services:
     restart: unless-stopped
     init: true
     env_file: .env.dev
+    environment:
+      AI_RUNNER_AUTH_DIR: /runner-auth
     ports:
       - "${RECEIPT_BRIDGE_DEV_BIND:-127.0.0.1}:${RECEIPT_BRIDGE_DEV_PORT:-18089}:8092"
     volumes:
       - ./config.dev.toml:/app/config.toml:ro
       - receipt-bridge-dev-data:/data
+      - runner-auth:/runner-auth
     networks:
       - default
       - ledger-dev
@@ -29,10 +32,33 @@ services:
     mem_limit: 2g
     pids_limit: 256
     stop_grace_period: 5m
+  ai-runner:
+    image: receipt-bridge-ai-runner:dev
+    pull_policy: build
+    build:
+      context: .
+      target: cli
+    restart: unless-stopped
+    init: true
+    environment:
+      AI_RUNNER_AUTH_DIR: /runner-auth
+    volumes:
+      - runner-auth:/runner-auth:ro
+      - ai-home:/ai-home
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    stop_grace_period: 5m
+
 networks:
   ledger-dev:
     external: true
     name: ${RECEIPT_BRIDGE_DEV_LEDGER_NETWORK:-duet-ledger-dev_default}
 volumes:
+  runner-auth:
+  ai-home:
   receipt-bridge-dev-data:
     name: receipt-bridge-dev-data

@@ -35,7 +35,7 @@ docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-
 docker compose -f compose.test.yaml --profile ui run --build --rm ui-test
 
 # 실행 이미지 빌드
-docker compose -f compose.yaml -f compose.build.yaml build receipt-bridge
+docker compose -f compose.yaml -f compose.build.yaml build
 ```
 
 테스트 실행은 네트워크를 차단하며 임시 DB와 외부 서비스 대역을 사용합니다. 이미지 빌드에는 패키지를 내려받을 인터넷 연결이 필요합니다. 실제 영수증·접속 정보·운영 DB를 연결하지 않습니다.
@@ -58,7 +58,7 @@ docker compose --env-file .env.dev -f compose.dev.yaml up -d --build
 - 데이터 볼륨: `receipt-bridge-dev-data`
 - 기본 가계부 네트워크: `duet-ledger-dev_default`
 
-첫 접속에서 개발용 관리자 비밀번호를 만듭니다. 웹에서 **개발용 봇·가계부 주소·앱 비밀번호·계좌**를 설정합니다. 운영용 키나 DB는 복사하지 않습니다. 같은 봇을 운영·개발에서 동시에 사용하면 수신이 충돌합니다.
+첫 접속에서 개발용 관리자 비밀번호를 만듭니다. 웹에서 **개발용 봇·가계부 주소·앱 비밀번호·계좌**를 설정합니다. 분석용 인증·자동 통신 토큰도 개발 프로젝트의 별도 볼륨에 저장합니다. 운영용 키나 DB는 복사하지 않습니다. 같은 봇을 운영·개발에서 동시에 사용하면 수신이 충돌합니다.
 
 다른 PC에서 접근해야 한다면 `.env.dev`의 바인딩 주소를 신뢰하는 내부망 IP로 변경합니다. 개발 화면을 인터넷에 공개하지 마세요.
 

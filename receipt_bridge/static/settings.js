@@ -15,19 +15,19 @@ const AI_PROVIDERS = {
     label: "Codex CLI",
     modelHint: "사용 가능한 Codex 모델 이름",
     description:
-      "CLI 분석 컨테이너에 Codex 설치·로그인이 필요합니다. 외부 AI 전송 허용을 켜세요.",
+      "전용 분석 서비스에서 실행합니다. 최초 한 번 로그인하고 외부 AI 전송 허용을 켜세요.",
   },
   claude: {
     label: "Claude Code CLI",
     modelHint: "사용 가능한 Claude 모델 이름",
     description:
-      "CLI 분석 컨테이너에 Claude 설치와 API 키 설정이 필요합니다. 외부 AI 전송 허용을 켜세요.",
+      "아래에서 Claude API 키를 저장하세요. 외부 AI 전송 허용이 필요하며 API 요금이 발생할 수 있습니다.",
   },
   agy: {
     label: "Antigravity CLI · OCR 텍스트 분석",
     modelHint: "gemini-3.8-flash-low",
     description:
-      "사진은 로컬 OCR로 읽고 텍스트만 전달합니다. Antigravity 설치·로그인과 외부 AI 전송 허용이 필요합니다.",
+      "사진은 로컬 OCR로 읽고 텍스트만 전달합니다. 최초 한 번 Google 로그인과 외부 AI 전송 허용이 필요합니다.",
   },
 };
 
@@ -292,7 +292,7 @@ function appendSettingsSections(form, values, savedSecrets) {
         ),
       );
     }
-    if (key === "ai")
+    if (key === "ai") {
       section.append(
         settingsToggle(
           "allow_external_ai",
@@ -300,7 +300,9 @@ function appendSettingsSections(form, values, savedSecrets) {
           "Codex·Claude는 사진을, Antigravity는 로컬 OCR로 읽은 텍스트를 해당 AI 제공자에게 전달합니다.",
           values.allow_external_ai,
         ),
+        aiSetupControls(form, values),
       );
+    }
     if (key === "auto_save")
       section.append(
         settingsToggle(
@@ -335,6 +337,64 @@ function appendSettingsSections(form, values, savedSecrets) {
   }
 }
 
+function aiSetupControls(form, values) {
+  const result = el("p", { id: "ai-check-result", role: "status" });
+  const models = el("div", { id: "ai-model-options", class: "ai-model-options" });
+  const check = el("button", { type: "button", id: "ai-check" }, "연결·설치 확인");
+  const input = el("input", {
+    id: "ai-api-key", type: "password", autocomplete: "new-password",
+    placeholder: "Claude API 키 · 저장 후 입력칸을 비웁니다",
+  });
+  const saveKey = el("button", { type: "button", id: "ai-key-save" }, "API 키 저장");
+  function requireSaved() {
+    if (dirty || form.elements.namedItem("ai_provider").value !== values.ai_provider)
+      throw Error("먼저 변경 사항 저장을 눌러 AI 설정을 저장하세요.");
+  }
+  check.addEventListener("click", async () => {
+    try {
+      requireSaved();
+      check.disabled = true;
+      result.textContent = "분석 서비스 연결을 확인하고 있습니다…";
+      const data = await api("/api/ai/check", {});
+      result.textContent = data.message;
+      models.replaceChildren();
+      for (const model of data.models || []) {
+        const button = el("button", { type: "button" }, model);
+        button.addEventListener("click", () => {
+          form.elements.namedItem("ai_model").value = model;
+          dirty = true;
+          result.textContent = "모델을 선택했습니다. 변경 사항 저장을 눌러 적용하세요.";
+        });
+        models.append(button);
+      }
+    } catch (error) { result.textContent = error.message; }
+    finally { check.disabled = false; }
+  });
+  saveKey.addEventListener("click", async () => {
+    try {
+      requireSaved();
+      saveKey.disabled = true;
+      await api("/api/ai/credentials", { key: input.value.trim() });
+      input.value = "";
+      input.type = "password";
+      result.textContent = "API 키를 분석 서비스에 저장했습니다.";
+    } catch (error) { result.textContent = error.message; }
+    finally { saveKey.disabled = false; }
+  });
+  return el("div", { id: "ai-setup", class: "ai-setup" },
+    el("p", {}, "CLI는 분석 이미지에 포함되어 있습니다. 제공자·모델을 바꿔도 다시 설치하지 않습니다. 통신용 토큰은 자동 관리합니다."),
+    check, result, models,
+    el("div", { id: "ai-claude-key", class: "field" },
+      el("label", { for: "ai-api-key" }, "Claude API 키"),
+      secretControl(input, "Claude API 키"), saveKey,
+      el("small", {}, "분석 전용 저장 공간에 보관합니다. 기존 키는 입력하지 않으면 유지합니다.")),
+    el("details", { id: "ai-login-guide" },
+      el("summary", {}, "최초 계정 로그인 방법"),
+      el("p", {}, "서버 터미널에서 다음 명령을 한 번 실행하고 표시되는 주소에서 로그인하세요. Antigravity는 브라우저의 인증 코드를 터미널에 입력합니다. 로그인 정보는 분석 볼륨에 유지됩니다."),
+      el("pre", {}, el("code", { id: "ai-login-command" }))),
+  );
+}
+
 function configureAIFields(form, values) {
   let previousProvider = values.ai_provider;
   const modelDrafts = { [previousProvider]: values.ai_model };
@@ -352,6 +412,14 @@ function configureAIFields(form, values) {
       form.querySelector(`[data-setting="${key}"]`).hidden = !visible;
     form.querySelector("#set-allow_external_ai").closest(".toggle-row").hidden =
       provider === "ollama";
+    form.querySelector("#ai-setup").hidden = provider === "ollama";
+    form.querySelector("#ai-claude-key").hidden = provider !== "claude";
+    form.querySelector("#ai-login-guide").hidden = provider === "claude";
+    form.querySelector("#ai-login-command").textContent = provider === "codex"
+      ? "docker compose run --rm -e HOME=/ai-home -e CODEX_HOME=/ai-home/.codex --entrypoint codex ai-runner login --device-auth"
+      : 'docker compose run --rm -e HOME=/ai-home -e SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" --entrypoint agy ai-runner';
+    form.querySelector("#ai-check-result").textContent = "설정을 저장한 뒤 분석 서비스 연결을 확인하세요.";
+    form.querySelector("#ai-model-options").replaceChildren();
     const { modelHint, description } = AI_PROVIDERS[provider];
     form.elements.namedItem("ai_model").placeholder = modelHint;
     providerHelp.textContent = description;
@@ -422,7 +490,9 @@ function settingsPayload(form) {
 }
 
 function bindSettingsSave(form, values) {
-  form.addEventListener("input", () => (dirty = true));
+  form.addEventListener("input", (event) => {
+    if (!event.target.closest("#ai-setup")) dirty = true;
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = form.querySelector("button[type=submit]");

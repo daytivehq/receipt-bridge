@@ -3,16 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .config import telegram_identity
 from .images import atomic_write, local_ocr, process_image
 from .ledger import RemoteError
 from .messenger import identity
-from .models import Extraction, auto_eligible, fingerprint, transaction
+from .models import Extraction, TextExtractions, auto_eligible, fingerprint, transaction
 from .store import dumps
+from .text_input import conflict_message, ground_text, merge_caption
 
-HELP = """영수증 사진 한 장 또는 이미지 파일을 보내세요. 확인 후 저장합니다.
+HELP = """영수증 사진·이미지 파일·지출 텍스트를 보내세요. 여러 건도 각각 확인 후 저장합니다.
+예: 오늘 AA에서 5000원, BB에서 43,500원 썼어. 사진 설명도 반영합니다.
 /pending — 처리 중·확인 대기 목록
 /status 작업ID — 상태와 결과 다시 보기
 /categories 작업ID — 해당 계좌의 지출 분류
@@ -138,22 +142,10 @@ class Service:
                 if doc.get("file_size", 0) > self.settings.max_download_mb * 1024 * 1024:
                     raise ValueError("이미지는 수신 크기 설정 이하로 보내세요")
                 file_id = doc["file_id"]
-            if file_id:
-                account = self.settings.account_for(user, chat)
-                if not account:
-                    raise ValueError("이 사용자 또는 채팅의 기본 계좌를 설정해 주세요")
-                bot_id = telegram_identity(self.settings.telegram_token)
-                job = self.store.create_job(
-                    chat,
-                    user,
-                    message["message_id"],
-                    file_id,
-                    account,
-                    adapter="telegram:" + bot_id if bot_id else "telegram",
-                )
-                self.reply(update, chat, f"{job['id']}: 영수증을 접수했습니다")
-                return
             text = message.get("text", "").strip()
+            if file_id or (text and not text.startswith("/")):
+                self.receive_input(update, message, file_id, user, chat)
+                return
             parts = text.split(maxsplit=2)
             command = parts[0].split("@")[0] if parts else "/help"
             if command in {"/start", "/help"}:
@@ -192,6 +184,8 @@ class Service:
                 self.edit(job, parts[2], context)
             elif command in {"/rotate", "/original"}:
                 self.editable(job)
+                if job["input_kind"] == "text":
+                    raise ValueError("텍스트 작업에는 사진이 없습니다. /edit로 내용을 수정하세요")
                 fields = {"use_original": 1} if command == "/original" else {}
                 if command == "/rotate":
                     if len(parts) < 3 or parts[2] not in {"90", "180", "270"}:
@@ -216,8 +210,34 @@ class Service:
         except RemoteError as exc:
             self.reply(update, chat, f"{exc}. 잠시 후 같은 명령을 다시 보내세요")
 
+    def receive_input(self, update, message, file_id, user, chat):
+        account = self.settings.account_for(user, chat)
+        if not account:
+            raise ValueError("이 사용자 또는 채팅의 기본 계좌를 설정해 주세요")
+        text = (message.get("caption", "") if file_id else message.get("text", "")).strip()
+        if len(text) > 4096:
+            raise ValueError("텍스트는 4,096자 이하로 보내세요")
+        stamp = message.get("date", time.time())
+        if type(stamp) not in (int, float) or not 0 <= stamp <= time.time() + 300:
+            raise ValueError("메시지의 전송 날짜를 확인하세요")
+        reference = datetime.fromtimestamp(stamp, ZoneInfo(self.settings.timezone)).date().isoformat()
+        bot_id = telegram_identity(self.settings.telegram_token)
+        job = self.store.create_job(
+            chat,
+            user,
+            message["message_id"],
+            file_id or "",
+            account,
+            adapter="telegram:" + bot_id if bot_id else "telegram",
+            input_kind="image" if file_id else "text",
+            input_text=text,
+            reference_date=reference,
+        )
+        self.reply(update, chat, f"{job['id']}: {'영수증' if file_id else '지출 텍스트'}을 접수했습니다")
+
     def edit(self, job, text, context=None):
         ex = json.loads(job["extraction"])
+        conflicts = json.loads(job["conflicts"])
         account = job["account"]
         if text.startswith("merchant="):
             ex["merchant"] = text.removeprefix("merchant=").strip()
@@ -231,6 +251,7 @@ class Service:
                     account = value
                 elif key in {"amount", "date", "time", "currency", "category"}:
                     ex[key] = None if value == "null" else value
+                    conflicts.pop(key, None)
                 else:
                     raise ValueError("지원하지 않는 수정 항목입니다")
         extraction = Extraction.model_validate(ex)
@@ -243,6 +264,8 @@ class Service:
                 extraction, ac, cats, self.settings.timezone, self.settings.max_amount_minor
             )
             fp = fingerprint(payload, ac["currency"])
+            if conflicts:
+                error = conflict_message(conflicts)
         except ValueError as exc:
             error = str(exc)
         self.store.update(
@@ -251,6 +274,7 @@ class Service:
             account=account,
             fingerprint=fp,
             revision=job["revision"] + 1,
+            conflicts=dumps(conflicts),
             state="waiting",
             error=error,
         )
@@ -258,6 +282,8 @@ class Service:
 
     def evaluate(self, job, context=None):
         self.require_account(job)
+        if json.loads(job["conflicts"]):
+            raise ValueError(conflict_message(json.loads(job["conflicts"])))
         ac, cats = context or self.ledger.context(job["account"])
         ex = Extraction.model_validate_json(job["extraction"])
         payload = transaction(ex, ac, cats, self.settings.timezone, self.settings.max_amount_minor)
@@ -279,6 +305,12 @@ class Service:
     def status(self, job, key=None):
         key = key or f"status:{job['id']}:{job['revision']}:{job['state']}"
         lines = [f"작업 {job['id']} · {job['state']}", f"계좌: {job['account']}"]
+        if job["input_kind"] == "text":
+            lines.append("텍스트 지출 · 사진 첨부 없음")
+        if job["batch_size"] > 1:
+            lines.append(f"이 메시지의 {job['batch_size']}건 중 {job['part'] + 1}번째 · 각각 확인·저장하세요")
+        if job["input_text"]:
+            lines.append("입력: " + job["input_text"][:300])
         buttons = None
         if job["extraction"]:
             ex = Extraction.model_validate_json(job["extraction"])
@@ -324,6 +356,10 @@ class Service:
         self.store.notify(key, job["chat"], text, image, buttons)
 
     def verify_image(self, job):
+        if job["input_kind"] == "text":
+            if not job["input_text"] or job["file_id"] or job["image"]:
+                raise ValueError("텍스트 작업의 입력 정보를 확인하세요")
+            return
         if not job["image"] or not Path(job["image"]).is_file():
             raise ValueError("보정 사진이 없습니다. 원본과 데이터 볼륨을 확인하세요")
         if hashlib.sha256(Path(job["image"]).read_bytes()).hexdigest() != job["image_hash"]:
@@ -345,7 +381,16 @@ class Service:
                 if checked != payload:
                     raise ValueError("저장 요청과 현재 검증 결과가 다릅니다")
                 posting = self.ledger.create(payload, job["request_key"])
-                self.store.update(job["id"], posting_id=posting, state="attaching", attempts=0, next_at=0)
+                self.store.update(
+                    job["id"],
+                    posting_id=posting,
+                    state="done" if job["input_kind"] == "text" else "attaching",
+                    attempts=0,
+                    next_at=0,
+                    error=None,
+                )
+                if job["input_kind"] == "text":
+                    self.status(self.store.get(job["id"]))
             elif stage == "attaching":
                 self.verify_image(job)
                 receipt = self.ledger.attach(job["posting_id"], Path(job["image"]))
@@ -355,6 +400,9 @@ class Service:
             self.fail(self.store.get(job["id"]), exc)
 
     def analyze(self, job):
+        if job["input_kind"] == "text":
+            self.analyze_text(job)
+            return
         folder = self.settings.data_dir / "receipts" / job["id"]
         original = folder / "original.bin"
         output = folder / f"corrected-{job['revision']}.jpg"
@@ -365,22 +413,93 @@ class Service:
         self.store.update(job["id"], original=str(original), state="processing")
         notes, digest = process_image(original, output, job["rotation"], bool(job["use_original"]))
         self.store.update(job["id"], image=str(output), image_warnings=dumps(notes), image_hash=digest)
-        _, cats = self.ledger.context(job["account"])
+        account, cats = self.ledger.context(job["account"])
         extraction = self.ai.extract(output, cats)
+        conflicts = {}
+        if job["input_text"]:
+            annotations = self.ai.extract_text(
+                job["input_text"], cats, job["reference_date"], account["currency"], annotation=True
+            )
+            if len(annotations.items) > 1:
+                raise ValueError(
+                    "사진 한 장의 설명에는 한 지출만 입력하세요. 여러 지출 텍스트는 별도 메시지로 보내세요"
+                )
+            if annotations.items:
+                annotation = ground_text(
+                    annotations.items[0],
+                    job["input_text"],
+                    job["reference_date"],
+                    account["currency"],
+                    annotation=True,
+                )
+                extraction, conflicts = merge_caption(extraction, annotation)
         ocr = self.ocr(output, self.settings.ocr_languages)
-        self.store.update(job["id"], extraction=extraction.model_dump_json(), ocr=ocr)
+        self.store.update(
+            job["id"], extraction=extraction.model_dump_json(), ocr=ocr, conflicts=dumps(conflicts)
+        )
         job = self.store.get(job["id"])
         error = None
         eligible = False
         try:
             ex, payload, duplicates = self.evaluate(job)
-            eligible = auto_eligible(ex, payload, ocr, self.settings, duplicates, notes)
+            eligible = not job["input_text"] and auto_eligible(
+                ex, payload, ocr, self.settings, duplicates, notes
+            )
         except ValueError as exc:
             error = str(exc)
         self.store.update(job["id"], state="waiting", attempts=0, next_at=0, error=error)
         self.status(self.store.get(job["id"]))
         if eligible:
             self.confirm(self.store.get(job["id"]))
+
+    def analyze_text(self, job):
+        self.store.update(job["id"], state="processing")
+        account, cats = self.ledger.context(job["account"])
+        batch = TextExtractions.model_validate(
+            self.ai.extract_text(
+                job["input_text"],
+                cats,
+                job["reference_date"],
+                account["currency"],
+            )
+        )
+        if not batch.items:
+            raise ValueError("지출을 찾지 못했습니다. 상호명·금액·날짜를 입력하세요. 예: 오늘 AA에서 5000원")
+        extractions = [
+            ground_text(item, job["input_text"], job["reference_date"], account["currency"])
+            for item in batch.items
+        ]
+        # All split items commit together. A crash must never leave a partially split message.
+        with self.store.tx():
+            for part, extraction in enumerate(extractions):
+                current = (
+                    job
+                    if part == 0
+                    else self.store.create_job(
+                        job["chat"],
+                        job["user"],
+                        job["message"],
+                        "",
+                        job["account"],
+                        adapter=job["adapter"] + ":part:" + str(part),
+                        input_kind="text",
+                        input_text=job["input_text"],
+                        reference_date=job["reference_date"],
+                    )
+                )
+                self.store.update(
+                    current["id"],
+                    extraction=extraction.model_dump_json(),
+                    batch_size=len(extractions),
+                    part=part,
+                )
+                error = None
+                try:
+                    self.evaluate(self.store.get(current["id"]), (account, cats))
+                except ValueError as exc:
+                    error = str(exc)
+                self.store.update(current["id"], state="waiting", attempts=0, next_at=0, error=error)
+                self.status(self.store.get(current["id"]))
 
     def fail(self, job, exc):
         self.store.log(

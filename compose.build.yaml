@@ -6,3 +6,10 @@ services:
     build:
       context: .
       target: runtime
+
+  ai-runner:
+    image: receipt-bridge-ai-runner:dev
+    pull_policy: build
+    build:
+      context: .
+      target: cli

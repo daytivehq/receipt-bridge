@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from .runner_auth import runner_token
+
 CREDENTIAL_FIELDS = ("telegram_token", "ledger_password")
 
 
@@ -120,8 +122,8 @@ def load_settings(path: str | Path = "config.toml") -> Settings:
     for env, field in (
         ("TELEGRAM_BOT_TOKEN", "telegram_token"),
         ("DUET_APP_PASSWORD", "ledger_password"),
-        ("AI_RUNNER_TOKEN", "ai_runner_token"),
     ):
         secret_file = os.getenv(env + "_FILE")
         values[field] = Path(secret_file).read_text().strip() if secret_file else os.getenv(env, "")
+    values["ai_runner_token"] = runner_token(create=True)
     return Settings(**values)

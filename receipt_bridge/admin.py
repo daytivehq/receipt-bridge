@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from pydantic import ValidationError
 
 from . import __version__
+from .ai import runner_setup
 from .auth import password_hash, password_matches
 from .config import CREDENTIAL_FIELDS, Settings, configured, telegram_identity, valid_runner_token
 
@@ -137,7 +138,7 @@ class AdminState:
             settings.ai_runner_token.get_secret_value()
         ):
             missing.append(
-                "AI 분석 → .env의 AI_RUNNER_TOKEN에 32자 이상 전용 토큰을 설정하고 컨테이너를 다시 시작하세요"
+                "AI 분석 → 분석 서비스의 통신 인증이 준비되지 않았습니다. 최신 Compose의 runner-auth 볼륨 연결을 확인하세요."
             )
         return missing
 
@@ -300,6 +301,11 @@ def make_server(state: AdminState, host=None, port=None):
                 "posting_id",
                 "receipt_id",
                 "image_warnings",
+                "input_kind",
+                "input_text",
+                "reference_date",
+                "batch_size",
+                "part",
             )
             result = {key: job[key] for key in fields}
             result["extraction"] = json.loads(job["extraction"]) if job["extraction"] else None
@@ -470,6 +476,11 @@ def make_server(state: AdminState, host=None, port=None):
                     return self.json(
                         200, {"ok": True}, "rb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
                     )
+                if path == "/api/ai/check":
+                    return self.json(200, runner_setup(state.effective(), "check"))
+                if path == "/api/ai/credentials":
+                    runner_setup(state.effective(), "credentials", data.get("key"))
+                    return self.json(200, {"ok": True})
                 if path == "/api/settings/reveal-secret":
                     key = data.get("key")
                     if not isinstance(key, str) or key not in CREDENTIAL_FIELDS:

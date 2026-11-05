@@ -24,7 +24,7 @@ const status = {demo:true,ready:true,paused:false,revision:0,applied_revision:0,
   checks:{telegram:true,ledger:true,ai:true,account:true,allowlist:true}};
 const flush = async () => {for(let i=0;i<12;i++) await new Promise(resolve=>setImmediate(resolve));};
 
-async function app(setupRequired=false,responseStatus=status,savedSecrets={},pathname="/"){
+async function app(setupRequired=false,responseStatus=status,savedSecrets={},pathname="/", initialSettings=settings, detailJob=job){
   const errors=[];
   const console = new VirtualConsole();
   console.on('jsdomError', error=>errors.push(error.message));
@@ -42,12 +42,14 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
     else if(path==='/api/login')body={csrf:'TEST_CSRF'};
     else if(path==='/api/logout')body={ok:true};
     else if(path==='/api/overview')body={status:responseStatus,settings,summary:{total:1,today:1,counts:{waiting:1},dates:[],inbox:0,outbox:0},recent:{items:[job]}};
-    else if(path==='/api/settings')body={settings,status:responseStatus,secrets:savedSecrets};
+    else if(path==='/api/settings')body={settings:initialSettings,status:responseStatus,secrets:savedSecrets};
+    else if(path==='/api/ai/check')body={installed:true,auth:'unknown',message:'모델 목록을 불러왔습니다. 로그인은 별도 확인하세요.',models:['gemini-test-low']};
+    else if(path==='/api/ai/credentials')body={ok:true};
     else if(path==='/api/settings/reveal-secret')body={value:'TEST_SAVED_SECRET'};
     else if(path==='/api/control')body={...status,paused:JSON.parse(options.body).paused};
     else if(path.startsWith('/api/jobs?'))body={items:[job],total:1,page:1,page_size:20};
     else if(path.startsWith('/api/logs?'))body={items:[{id:1,at:Date.parse('2026-11-02T15:11:00Z')/1000,level:'info',message:'테스트 로그',job_id:job.id}],total:1,page:1,page_size:50,timezone:'Asia/Seoul'};
-    else if(path==='/api/jobs/test-job')body=job;
+    else if(path==='/api/jobs/test-job')body=detailJob;
     else throw Error('Unexpected API request '+path);
     return {ok:true,status:200,json:async()=>structuredClone(body)};
   };
@@ -432,5 +434,70 @@ test('direct links, browser back and forward preserve routes and unsaved setting
   w.history.forward(); await new Promise(resolve=>setTimeout(resolve,30)); await flush();
   assert.equal(w.location.pathname,'/settings');
   assert.equal(d.querySelector('#breadcrumb').textContent,'서비스 설정');
+  dom.window.close();
+});
+
+
+test('CLI connection checks, model selection and API keys stay out of general settings',async()=>{
+  const chosen={...settings,ai_provider:'agy',allow_external_ai:true};
+  const {dom,w,requests,errors}=await app(false,status,{},"/",chosen);
+  const d=w.document;
+  await login(w);
+  d.querySelector('[data-page="settings"]').click();
+  await flush();
+  assert.equal(d.querySelector('#ai-setup').hidden,false);
+  assert.equal(d.querySelector('#ai-claude-key').hidden,true);
+  assert.match(d.querySelector('#ai-login-command').textContent,/--entrypoint agy/);
+  d.querySelector('#ai-check').click();
+  await flush();
+  const call=requests.find(r=>r.path==='/api/ai/check');
+  assert.ok(call);
+  assert.equal(call.options.headers['X-CSRF-Token'],'TEST_CSRF');
+  assert.match(d.querySelector('#ai-check-result').textContent,/로그인/);
+  d.querySelector('#ai-model-options button').click();
+  assert.equal(d.querySelector('[name="ai_model"]').value,'gemini-test-low');
+  d.querySelector('#ai-check').click();
+  await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/ai/check').length,1);
+  assert.match(d.querySelector('#ai-check-result').textContent,/먼저 변경 사항 저장/);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+
+  const claude=await app(false,status,{},"/",{...settings,ai_provider:'claude',allow_external_ai:true});
+  await login(claude.w);
+  claude.w.document.querySelector('[data-page="settings"]').click();
+  await flush();
+  const c=claude.w.document;
+  assert.equal(c.querySelector('#ai-login-guide').hidden,true);
+  const input=c.querySelector('#ai-api-key');
+  input.value='TEST_CLAUDE_KEY';
+  input.dispatchEvent(new claude.w.Event('input',{bubbles:true}));
+  c.querySelector('#ai-key-save').click();
+  await flush();
+  const saved=claude.requests.find(r=>r.path==='/api/ai/credentials');
+  assert.deepEqual(JSON.parse(saved.options.body),{key:'TEST_CLAUDE_KEY'});
+  assert.equal(input.value,'');
+  assert.equal(claude.requests.filter(r=>r.path==='/api/settings' && r.options.method==='POST').length,0);
+  assert.deepEqual(claude.errors,[]);
+  claude.dom.window.close();
+});
+
+
+test('text expense detail shows the original input safely without a missing-photo warning',async()=>{
+  const source='오늘 <img src=x onerror=alert(1)>에서 5000원, BB에서 43500원';
+  const textJob={...job,input_kind:'text',input_text:source,batch_size:2,part:1,has_image:false,has_original:false};
+  const {dom,w,errors}=await app(false,status,{},"/",settings,textJob);
+  await login(w);
+  w.document.querySelector('[data-page="jobs"]').click();
+  await flush();
+  w.document.querySelector('tr[data-id]').click();
+  await flush();
+  const body=w.document.querySelector('#detail-body');
+  assert.match(body.textContent,/텍스트로 입력한 지출/);
+  assert.match(body.textContent,/2건 중 2번째/);
+  assert.equal(body.querySelector('.input-source').textContent,source);
+  assert.equal(body.querySelectorAll('[onerror]').length,0);
+  assert.equal(body.querySelectorAll('img').length,0);
+  assert.deepEqual(errors,[]);
   dom.window.close();
 });

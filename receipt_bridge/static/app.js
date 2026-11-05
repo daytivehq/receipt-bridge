@@ -1032,6 +1032,7 @@ async function showDetail(id) {
     for (const [label, value] of [
       ["작업 ID", job.id],
       ["처리 상태", states[job.state] || job.state],
+      ["입력 방식", job.input_kind === "text" ? "텍스트 지출" : "영수증 사진"],
       ["상호", ex.merchant || "—"],
       ["결제 금액", `${ex.amount || "—"} ${ex.currency || ""}`],
       ["결제 일시", `${ex.date || "—"} ${ex.time || ""}`],
@@ -1067,10 +1068,15 @@ async function showDetail(id) {
     } else
       images.append(
         empty(
-          "보관된 사진이 없습니다.",
-          "다운로드가 시작되지 않았을 수 있습니다.",
+          job.input_kind === "text" ? "텍스트로 입력한 지출입니다." : "보관된 사진이 없습니다.",
+          job.input_kind === "text" ? "사진 첨부 없이 거래만 저장합니다." : "다운로드가 시작되지 않았을 수 있습니다.",
         ),
       );
+    if (job.input_text) body.append(
+      el("h3", {}, job.input_kind === "text" ? "받은 텍스트" : "사진 설명"),
+      el("p", { class: "input-source" }, job.input_text),
+    );
+    if (job.batch_size > 1) body.append(el("p", {}, `한 메시지의 ${job.batch_size}건 중 ${job.part + 1}번째 지출입니다. 각각 확인·저장합니다.`));
     body.append(
       el("div", { class: "detail-grid" }, images, facts),
       el("h3", {}, "처리 이력"),

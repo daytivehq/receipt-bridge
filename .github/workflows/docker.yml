@@ -90,7 +90,6 @@ jobs:
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:latest
           labels: |
             org.opencontainers.image.title=Receipt Bridge
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -100,3 +99,27 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build and publish AI runner
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          target: cli
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}-ai-runner:${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=Receipt Bridge AI Runner
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,scope=runner,mode=max
+      - name: Update latest after both images are published
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          docker buildx imagetools create --tag "$IMAGE-ai-runner:latest" "$IMAGE-ai-runner:$VERSION"

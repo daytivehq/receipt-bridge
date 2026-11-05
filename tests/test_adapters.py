@@ -156,7 +156,7 @@ def test_runner_only_receives_image_and_categories(tmp_path):
 
     def handle(request):
         body = json.loads(request.content)
-        assert set(body) == {"image", "categories", "provider", "model"}
+        assert set(body) == {"image", "categories", "provider", "model", "timeout"}
         assert body["provider"] == "codex" and body["model"] == "chosen-vision"
         assert b"password" not in request.content
         assert request.headers["Authorization"] == "Bearer " + "T" * 32
@@ -227,3 +227,100 @@ def test_antigravity_sends_only_ocr_text_and_always_requests_confirmation(tmp_pa
         runner.extract(path, CATEGORIES)
     assert len(calls) == 1  # No fallback provider or image transmission.
     runner.close()
+
+
+def test_text_adapters_use_batch_schema_and_never_send_images():
+    from receipt_bridge.models import TextExtractions
+
+    batch = TextExtractions(items=[sample_extraction()])
+    calls = []
+
+    def ollama_response(request):
+        body = json.loads(request.content)
+        assert "images" not in body["messages"][0]
+        assert "items" in body["format"]["properties"]
+        assert '"reference_date": "2026-01-15"' in body["messages"][0]["content"]
+        return httpx.Response(200, json={"message": {"content": batch.model_dump_json()}})
+
+    ollama = OllamaAI("http://mock.invalid", "chosen", 30, httpx.MockTransport(ollama_response))
+    assert len(ollama.extract_text("오늘 AA에서 5000원", CATEGORIES, "2026-01-15", "KRW").items) == 1
+    ollama.close()
+
+    def runner_response(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        assert body["mode"] == "text" and "image" not in body
+        assert body["text"] == "오늘 AA에서 5000원"
+        assert body["reference_date"] == "2026-01-15" and body["currency"] == "KRW"
+        assert body["annotation"] is True
+        return httpx.Response(200, json=batch.model_dump())
+
+    for provider in ("agy", "codex", "claude"):
+        adapter = RunnerAI(
+            "http://mock.invalid",
+            30,
+            provider,
+            "chosen",
+            httpx.MockTransport(runner_response),
+            token="T" * 32,
+        )
+        assert adapter.extract_text(
+            "오늘 AA에서 5000원", CATEGORIES, "2026-01-15", "KRW", annotation=True
+        ).items
+        adapter.close()
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("provider", ["agy", "codex", "claude"])
+def test_text_cli_disables_image_and_file_tools_and_validates_batch(tmp_path, monkeypatch, provider):
+    from receipt_bridge import ai
+    from receipt_bridge.models import TextExtractions
+
+    batch = TextExtractions(items=[sample_extraction()])
+    (tmp_path / "anthropic-api-key").write_text("TEST_AI_KEY")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: "/bin/" + name)
+    seen = {}
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            seen["command"] = command
+            assert not (kwargs["cwd"] / "receipt.jpg").exists()
+            if provider == "codex":
+                (kwargs["cwd"] / "result.json").write_text(batch.model_dump_json())
+            elif provider == "claude":
+                kwargs["stdout"].write(json.dumps({"structured_output": batch.model_dump()}).encode())
+            else:
+                kwargs["stdout"].write(
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {"status": "SUCCESS", "structured_output": batch.model_dump()},
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+
+        def communicate(self, data, timeout):
+            seen["input"] = data.decode()
+
+    monkeypatch.setattr(ai.subprocess, "Popen", Process)
+    result = run_cli(
+        provider,
+        "chosen",
+        None,
+        CATEGORIES,
+        tmp_path,
+        30,
+        ocr_text="오늘 AA에서 5000원",
+        text_only=True,
+        reference_date="2026-01-15",
+        currency="KRW",
+    )
+    assert len(result.items) == 1
+    assert "--image" not in seen["command"]
+    if provider == "claude":
+        assert seen["command"][seen["command"].index("--tools") + 1] == ""
+        assert "--allowedTools" not in seen["command"]
+    assert "INPUT_JSON=" in seen["input"]

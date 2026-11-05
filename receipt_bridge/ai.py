@@ -158,11 +158,6 @@ class OllamaAI:
         self.http.close()
 
 
-class UnsupportedAI:
-    def extract(self, image, categories):
-        raise ValueError("agy: 공식 문서에서 headless 이미지 입력 방식이 확인되지 않아 지원을 보류했습니다")
-
-
 class RunnerAI:
     """The credentialed bridge never executes an agent CLI; a separate container does."""
 
@@ -324,7 +319,7 @@ def run_cli(
 ):
     """Only call in the secret-free AI runner, never in the bridge process."""
     if provider not in {"codex", "claude", "agy"}:
-        return UnsupportedAI().extract(None, categories)
+        raise ValueError("지원하지 않는 CLI 제공자입니다")
     with tempfile.TemporaryDirectory(prefix="receipt-ai-") as temp:
         work = Path(temp)
         if provider != "agy" and not text_only:

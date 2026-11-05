@@ -1,3 +1,4 @@
+# 운영용: 연결·AI 설정은 웹에서 입력합니다. .env는 선택 사항입니다.
 name: receipt-bridge
 services:
   receipt-bridge:

@@ -4,19 +4,17 @@
 
 | 파일 | 용도 |
 | --- | --- |
-| `compose.minimal.yaml` | 영수증·분석 서비스를 함께 실행. README에 나온 구성과 같습니다. |
-| `compose.yaml` | 같은 두 서비스를 실행하며 포트·이미지를 환경변수로 조절할 수 있는 구성 |
-| `compose.dev.yaml` | 운영과 데이터가 분리된 개발 환경 |
-| `compose.test.yaml` | 자동 테스트 |
-| `compose.build.yaml` | `compose.yaml`과 함께 사용해 소스에서 이미지 빌드 |
+| `compose.yaml` | GHCR 이미지를 받아 운영. README와 같은 구성입니다. |
+| `compose.dev.yaml` | 소스에서 빌드하는 별도 개발 환경 |
+| `compose.test.yaml` | 자동 테스트. 일반 설치에는 필요하지 않습니다. |
 
-처음 설치한다면 README의 구성을 `compose.yaml`로 저장하세요. 저장소를 클론했다면 최소 구성은 `docker compose -f compose.minimal.yaml up -d`로 실행합니다. 이후 조회·중지·업데이트 명령에도 같은 `-f compose.minimal.yaml`을 붙이세요.
+운영은 `docker compose up -d`로 시작합니다. `.env`와 `config.toml`은 필수가 아닙니다. 기본 접속은 `http://127.0.0.1:8892/`입니다. 다른 PC에서 접근하려면 `.env`에 `ADMIN_BIND=0.0.0.0`을 지정하거나 Compose의 포트를 `"8892:8092"`로 바꿉니다. `ADMIN_PORT`로 외부 포트를 변경할 수 있습니다.
 
-저장소의 기본 `compose.yaml`도 별도 설정 파일 없이 실행됩니다. 기본 접속은 `http://127.0.0.1:8892/`이며, 다른 PC에서 접근하려면 `.env`에 `ADMIN_BIND=0.0.0.0`을 지정하거나 Compose의 포트 바인딩을 바꿉니다. `.env.example`은 포트·이미지를 변경할 때만 복사하세요. AI 제공자·모델·시간 제한은 웹에서 저장합니다.
+가계부·Telegram·AI 연결 값은 웹에서 저장합니다. Telegram 없이 웹 업로드만 사용할 수도 있습니다. Docker의 포트·저장 공간·메모리 제한은 Compose에서 설정합니다.
 
-가계부·Telegram·AI 연결 값은 웹에서 저장합니다. Docker의 포트·저장 공간·메모리 제한은 Compose에서 설정합니다. 기본 두 서비스 구성은 0.2.0부터 지원하며, 웹 업로드·저장은 0.3.0 이상이 필요합니다.
+저장 공간은 `receipt-data`(DB·영수증), `runner-auth`(자동 통신 토큰), `ai-home`(AI 계정 인증)으로 나눕니다. 분석 서비스에는 가계부 데이터 볼륨을 연결하지 않습니다.
 
-저장 공간은 `receipt-data`(DB·영수증), `runner-auth`(자동 통신 토큰), `ai-home`(AI 계정 인증)으로 나눕니다. 분석 서비스는 가계부 데이터 볼륨을 연결하지 않습니다. Ollama만 사용한다면 `docker compose up -d receipt-bridge`로 주 서비스만 실행할 수 있습니다.
+Ollama만 사용한다면 `docker compose up -d receipt-bridge`로 주 서비스만 실행할 수 있습니다. 이미 분석 서비스를 실행했다면 `docker compose stop ai-runner`로 중지할 수 있습니다. 이 경우 이미지 갱신 명령에도 서비스 이름 `receipt-bridge`를 지정하세요.
 
 ## 기본 항목
 
@@ -97,3 +95,9 @@ volumes:
 이전 버전에서 `secrets/ai-home` 폴더에 로그인 정보를 보관했다면 새 분석 서비스의 `ai-home:/ai-home` 대신 기존 폴더를 `./secrets/ai-home:/ai-home`으로 연결할 수 있습니다. 폴더를 복사하거나 삭제하지 않고 기존 연결을 유지하세요.
 
 직접 수정한 `config.toml`을 사용했거나 환경변수로 가계부·Telegram 키를 넣었다면 새 Compose에 기존 파일 연결·환경변수를 명시적으로 유지하세요. 웹에서 이미 저장한 값은 DB에 남아 있습니다. 기존 파일을 예시 파일로 덮어쓰지 않습니다.
+
+## 이전 예시 파일을 사용했다면
+
+`compose.minimal.yaml`은 운영용과 중복되어 제거했습니다. 기존 설치 폴더의 파일과 실행 중인 컨테이너는 변경하지 않습니다. 파일 이름을 바꿀 때는 먼저 기존 프로젝트·볼륨 이름과 접속 포트를 확인하세요.
+
+`compose.build.yaml` 대신 소스 개발에는 `compose.dev.yaml`을 사용합니다. 운영 데이터로 개발 이미지를 실행하지 않습니다.

@@ -50,7 +50,7 @@ docker compose start receipt-bridge
 
 결과가 없으면 새 메시지를 보내고 다시 조회합니다. 같은 봇을 다른 수신 프로그램과 동시에 사용하지 마세요. 중간에 취소했더라도 마지막 `start` 명령은 실행합니다.
 
-가계부 **계좌 ID**는 `GET /api/v1/accounts` 응답의 `id`와 `name`을 확인합니다. 가계부 웹에서도 브라우저 개발자 도구 → Network → 새로고침 → `accounts` 응답으로 확인할 수 있습니다. 계좌 ID와 Telegram 사용자 ID는 다릅니다.
+웹 업로드는 저장 계좌를 목록에서 고르므로 계좌 ID를 직접 입력하지 않습니다. Telegram 계좌 연결에 필요한 **계좌 ID**는 `GET /api/v1/accounts` 응답의 `id`와 `name`을 확인합니다. 가계부 웹에서도 브라우저 개발자 도구 → Network → 새로고침 → `accounts` 응답으로 확인할 수 있습니다. 계좌 ID와 Telegram 사용자 ID는 다릅니다.
 
 ## 수정·재시도
 

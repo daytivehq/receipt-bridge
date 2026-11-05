@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from receipt_bridge.ai import OllamaAI, RunnerAI, UnsupportedAI, cli_command, run_cli
+from receipt_bridge.ai import OllamaAI, RunnerAI, cli_command, run_cli
 from receipt_bridge.ledger import Ledger, RemoteError
 from receipt_bridge.messenger import Telegram
 from tests.fakes import CATEGORIES, sample_extraction, sample_image
@@ -52,8 +52,8 @@ def test_cli_commands_use_documented_image_and_schema_flags(tmp_path):
     assert "--bare" in cmd and "--json-schema" in cmd and "--strict-mcp-config" in cmd
     assert cmd[cmd.index("--tools") + 1] == "Read"
     assert "--dangerously-skip-permissions" not in cmd
-    with pytest.raises(ValueError, match="agy"):
-        UnsupportedAI().extract(None, [])
+    with pytest.raises(ValueError, match="지원하지 않는 CLI"):
+        run_cli("unsupported", "chosen-vision", None, [], tmp_path, 30)
 
 
 def test_claude_runner_env_never_inherits_bridge_secrets(tmp_path, monkeypatch):

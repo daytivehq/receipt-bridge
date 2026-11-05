@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "receipt-bridge"
 dynamic = ["version"]
-description = "Telegram receipt intake for Duet Ledger"
+description = "Web and Telegram receipt processing for Duet Ledger"
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<0.29", "pydantic>=2.12,<3", "Pillow>=12,<13", "numpy>=2.3,<3", "opencv-python-headless>=4.12,<5"]
 

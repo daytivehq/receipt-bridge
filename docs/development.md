@@ -13,6 +13,9 @@ Python 표준 HTTP 서버, SQLite, 일반 JavaScript를 사용합니다. 프런�
 | `receipt_bridge/config.py` | 설정값과 검증 |
 | `receipt_bridge/service.py` | 영수증 처리 단계와 재시도 |
 | `receipt_bridge/images.py` | 이미지 보정·OCR |
+| `receipt_bridge/web_jobs.py` | 웹 업로드·작업 제어 |
+| `receipt_bridge/text_input.py` | 텍스트의 금액·날짜 근거 검증 |
+| `receipt_bridge/runner_auth.py`, `runner_setup.py` | 분석 서비스 통신 인증·CLI 연결 확인 |
 | `receipt_bridge/ai.py`, `runner.py` | AI 연결과 CLI 실행 |
 | `receipt_bridge/ledger.py`, `messenger.py` | 가계부·Telegram 연결 |
 | `receipt_bridge/static/` | 웹 화면·스타일·아이콘 |
@@ -33,10 +36,9 @@ docker compose -f compose.test.yaml run --rm --entrypoint ruff test format --no-
 
 # 화면 테스트·JavaScript 구문 검사
 docker compose -f compose.test.yaml --profile ui run --build --rm ui-test
-
-# 실행 이미지 빌드
-docker compose -f compose.yaml -f compose.build.yaml build
 ```
+
+`tests/`의 `test_*.py`와 `app.test.mjs`는 임시 파일이 아니라 회귀·보안 검사입니다. `compose.test.yaml`과 함께 GitHub Actions에서도 사용합니다. 테스트 코드와 검사 도구는 운영 이미지에 포함하지 않습니다.
 
 테스트 실행은 네트워크를 차단하며 임시 DB와 외부 서비스 대역을 사용합니다. 이미지 빌드에는 패키지를 내려받을 인터넷 연결이 필요합니다. 실제 영수증·접속 정보·운영 DB를 연결하지 않습니다.
 
@@ -58,7 +60,7 @@ docker compose --env-file .env.dev -f compose.dev.yaml up -d --build
 - 데이터 볼륨: `receipt-bridge-dev-data`
 - 기본 가계부 네트워크: `duet-ledger-dev_default`
 
-첫 접속에서 개발용 관리자 비밀번호를 만듭니다. 웹에서 **개발용 봇·가계부 주소·앱 비밀번호·계좌**를 설정합니다. 분석용 인증·자동 통신 토큰도 개발 프로젝트의 별도 볼륨에 저장합니다. 운영용 키나 DB는 복사하지 않습니다. 같은 봇을 운영·개발에서 동시에 사용하면 수신이 충돌합니다.
+첫 접속에서 개발용 관리자 비밀번호를 만듭니다. 웹에서 **개발 가계부·AI**를 설정합니다. Telegram을 사용할 때만 별도 개발 봇·허용 ID·저장 계좌를 설정합니다. 분석용 인증·자동 통신 토큰도 개발 프로젝트의 별도 볼륨에 저장합니다. 운영용 키나 DB는 복사하지 않습니다. 같은 봇을 운영·개발에서 동시에 사용하면 수신이 충돌합니다.
 
 다른 PC에서 접근해야 한다면 `.env.dev`의 바인딩 주소를 신뢰하는 내부망 IP로 변경합니다. 개발 화면을 인터넷에 공개하지 마세요.
 
@@ -70,4 +72,4 @@ docker compose --env-file .env.dev -f compose.dev.yaml logs --tail=100 receipt-b
 docker compose --env-file .env.dev -f compose.dev.yaml stop
 ```
 
-**`down -v`는 개발 DB·원본을 삭제합니다.** `compose.build.yaml`은 기본 설치와 같은 데이터를 사용하므로, 운영과 개발을 동시에 실행하려면 `compose.dev.yaml`을 사용하세요.
+**`down -v`는 개발 DB·원본·AI 인증 볼륨을 삭제합니다.** 운영은 `compose.yaml`, 개발은 `compose.dev.yaml`로 구분합니다.

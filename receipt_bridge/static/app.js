@@ -128,6 +128,38 @@ function badge(state) {
         : "gray";
   return el("span", { class: "badge " + type }, states[state] || state);
 }
+function formatAmount(value) {
+  const text = String(value ?? "");
+  if (!/^\d+(?:\.\d*)?$/.test(text)) return text;
+  const [whole, fraction] = text.split(".");
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fraction === undefined ? "" : "." + fraction);
+}
+function money(value, currency) {
+  if (value === null || value === undefined || value === "") return "—";
+  return formatAmount(value) + (currency === "KRW" ? "원" : currency ? " " + currency : "");
+}
+function formatAmountInput(input) {
+  input.addEventListener("input", (event) => {
+    // Do not silently turn malformed pasted grouping (e.g. 1,2) into another amount.
+    if (event.inputType === "insertFromPaste" && !/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d*)?$/.test(input.value)) return;
+    const raw = input.value.replaceAll(",", "");
+    if (!/^\d+(?:\.\d*)?$/.test(raw)) return;
+    const before = input.value.slice(0, input.selectionStart).replaceAll(",", "").length;
+    input.value = formatAmount(raw);
+    let chars = 0, cursor = 0;
+    while (cursor < input.value.length && chars < before) {
+      if (input.value[cursor] !== ",") chars++;
+      cursor++;
+    }
+    input.setSelectionRange(cursor, cursor);
+  });
+}
+function parseAmountInput(value) {
+  if (!value) return null;
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,3})?$/.test(value))
+    throw Error("금액은 100,000 또는 1,234.56처럼 입력하세요.");
+  return value.replaceAll(",", "");
+}
 function date(value) {
   return value
     ? new Date(value * 1000).toLocaleString("ko-KR", {
@@ -374,7 +406,7 @@ function jobTable(items) {
       el(
         "td",
         { class: "amount" },
-        ex.amount ? `${ex.amount} ${ex.currency || ""}` : "—",
+        money(ex.amount, ex.currency),
       ),
       el("td", {}, badge(job.state)),
       el("td", { class: "muted" }, "›"),
@@ -1160,7 +1192,7 @@ async function showDetail(id, refresh = false) {
       ["처리 상태", states[job.state] || job.state],
       ["입력 방식", job.input_kind === "text" ? "텍스트 지출" : "영수증 사진"],
       ["상호", ex.merchant || "—"],
-      ["결제 금액", `${ex.amount || "—"} ${ex.currency || ""}`],
+      ["결제 금액", money(ex.amount, ex.currency)],
       ["결제 일시", `${ex.date || "—"} ${ex.time || ""}`],
       ["분류", ex.category || "—"],
       ["계좌", job.account],
@@ -1242,28 +1274,32 @@ function jobControls(job) {
     });
     controls.append(button);
   }
-  if (job.state === "waiting") action("확인·저장", "confirm", true);
+  if (job.state === "waiting" && !job.error) action("확인·저장", "confirm", true);
   const editable = ["waiting", "failed"].includes(job.state) && !job.posting_id;
-  if (editable && job.extraction) {
-    const edit = el("button", { type: "button", class: "button" }, "거래 정보 수정");
+  if (editable) {
+    const edit = el("button", { type: "button", class: "button", "data-job-action": "edit" }, job.extraction ? "거래 정보 수정" : "거래 정보 직접 입력");
     edit.addEventListener("click", async () => {
       edit.disabled = true;
       try {
         const data = await api(`/api/jobs/${encodeURIComponent(job.id)}/categories`);
-        const ex = job.extraction;
+        const ex = job.extraction || {};
         const form = el("form", { class: "job-edit-form" });
         for (const [key, label, type] of [["merchant", "상호명", "text"], ["amount", "결제 금액", "text"], ["date", "결제 날짜", "date"], ["time", "결제 시간 (선택)", "time"], ["currency", "통화 코드", "text"]]) {
-          const input = el("input", { id: "edit-" + key, name: key, type, value: ex[key] || "", step: key === "time" ? "60" : null, inputmode: key === "amount" ? "decimal" : null });
+          const input = el("input", { id: "edit-" + key, name: key, type, value: key === "amount" ? formatAmount(ex[key]) : ex[key] || "", step: key === "time" ? "60" : null, inputmode: key === "amount" ? "decimal" : null });
+          if (key === "amount") formatAmountInput(input);
           form.append(el("div", { class: "field" }, el("label", { for: input.id }, label), input));
         }
         const category = el("select", { id: "edit-category", name: "category" }, el("option", { value: "" }, "분류를 선택하세요"), ...data.categories.map((item) => el("option", { value: item.code, selected: item.code === ex.category ? "" : null }, item.name)));
-        form.append(el("div", { class: "field" }, el("label", { for: category.id }, "분류"), category), el("p", {}, "사진·설명이 다르면 사용할 값을 입력하세요. 수정 저장 후 확인·저장을 눌러 등록합니다."), el("button", { type: "submit", class: "primary" }, "이 값으로 수정"));
+        form.append(el("div", { class: "field" }, el("label", { for: category.id }, "분류"), category), el("p", {}, "읽지 못한 값은 직접 입력하세요. 아는 항목만 먼저 저장해도 됩니다. 금액·날짜는 추측하지 않습니다. 입력 내용을 저장한 뒤 확인·저장을 눌러야 가계부에 등록됩니다."), el("button", { type: "submit", class: "primary" }, "입력 내용 저장"));
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const values = Object.fromEntries(["merchant", "amount", "date", "time", "currency", "category"].map((key) => [key, form.elements.namedItem(key).value.trim() || null]));
           const submit = form.querySelector('button[type="submit"]');
           submit.disabled = true;
-          try { await control("edit", values); }
+          try {
+            values.amount = parseAmountInput(values.amount);
+            await control("edit", values);
+          }
           catch (err) { error.textContent = err.message; submit.disabled = false; }
         });
         controls.append(form);

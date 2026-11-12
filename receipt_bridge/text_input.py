@@ -6,7 +6,7 @@ import re
 from datetime import date, timedelta
 from decimal import Decimal
 
-from .models import Extraction
+from .models import Extraction, display_amount
 
 
 def compact(value):
@@ -131,6 +131,7 @@ def merge_caption(receipt: Extraction, annotation: Extraction):
 def conflict_message(conflicts):
     labels = {"amount": "금액", "date": "날짜", "time": "시간", "currency": "통화"}
     return "; ".join(
-        f"{labels[field]} 불일치: 사진 {values[0]} / 설명 {values[1]} · /edit 작업ID {field}=값으로 선택하세요"
+        f"{labels[field]} 불일치: 사진 {display_amount(values[0]) if field == 'amount' else values[0]} "
+        f"/ 설명 {display_amount(values[1]) if field == 'amount' else values[1]} · /edit 작업ID {field}=값으로 선택하세요"
         for field, values in conflicts.items()
     )

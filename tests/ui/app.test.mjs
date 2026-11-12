@@ -58,7 +58,7 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
     else if(path==='/api/jobs/test-job/categories')body={categories:[{code:'food',name:'식비'}]};
     else if(path==='/api/jobs/test-job/control'){
       const data=JSON.parse(options.body);
-      if(data.action==='edit')detailJob={...detailJob,revision:(detailJob.revision||0)+1,extraction:{...detailJob.extraction,...data.values}};
+      if(data.action==='edit')detailJob={...detailJob,state:'waiting',error:null,revision:(detailJob.revision||0)+1,extraction:{...detailJob.extraction,...data.values}};
       if(data.action==='confirm')detailJob={...detailJob,state:'creating'};
       if(data.action==='cancel')detailJob={...detailJob,state:'cancelled'};
       body=detailJob;
@@ -641,6 +641,52 @@ test('30MB browser upload uses configured limit and settings show supported rang
   files.dispatchEvent(new w.Event('change'));
   d.querySelector('#upload-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
   assert.equal(requests.filter(r=>r.path==='/api/uploads').length,1);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('failed analysis without AI extraction allows manual entry before explicit confirmation',async()=>{
+  const failed={...job,state:'failed',extraction:null,error:'AI 분석 실패'};
+  const {dom,w,requests,errors}=await app(false,status,{},'/',settings,failed);
+  await login(w);
+  const d=w.document;
+  d.querySelector('[data-page="jobs"]').click(); await flush();
+  d.querySelector('tr[data-id]').click(); await flush();
+  assert.equal(d.querySelector('[data-job-action="confirm"]'),null);
+  d.querySelector('[data-job-action="edit"]').click(); await flush();
+  for(const [key,value] of Object.entries({merchant:'테스트 상점',amount:'5000',date:'2026-01-15',currency:'KRW',category:'food'}))d.querySelector('#edit-'+key).value=value;
+  assert.equal(d.querySelector('#edit-time').value,'');
+  d.querySelector('.job-edit-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  const calls=requests.filter(r=>r.path==='/api/jobs/test-job/control');
+  assert.equal(calls.length,1); assert.equal(JSON.parse(calls[0].options.body).action,'edit');
+  assert.equal(JSON.parse(calls[0].options.body).values.merchant,'테스트 상점');
+  assert.ok(d.querySelector('[data-job-action="confirm"]'));
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('receipt amounts show grouping, preserve decimals and submit plain exact strings',async()=>{
+  const {dom,w,requests,errors}=await app();
+  await login(w);
+  const d=w.document;
+  assert.match(d.querySelector('td.amount').textContent,/12,000원/);
+  d.querySelector('[data-page="jobs"]').click(); await flush();
+  d.querySelector('tr[data-id]').click(); await flush();
+  assert.match(d.querySelector('.detail-facts').textContent,/12,000원/);
+  d.querySelector('[data-job-action="edit"]').click(); await flush();
+  const amount=d.querySelector('#edit-amount');
+  assert.equal(amount.value,'12,000');
+  amount.value='100000000';amount.dispatchEvent(new w.InputEvent('input',{inputType:'insertText'}));
+  assert.equal(amount.value,'100,000,000');
+  assert.equal(amount.selectionStart,amount.value.length);
+  amount.value='1,2';amount.dispatchEvent(new w.InputEvent('input',{inputType:'insertFromPaste'}));
+  d.querySelector('.job-edit-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/jobs/test-job/control').length,0);
+  amount.value='9007199254740993.010';amount.dispatchEvent(new w.InputEvent('input',{inputType:'insertText'}));
+  assert.equal(amount.value,'9,007,199,254,740,993.010');
+  d.querySelector('.job-edit-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  const call=requests.filter(r=>r.path==='/api/jobs/test-job/control').at(-1);
+  assert.equal(JSON.parse(call.options.body).values.amount,'9007199254740993.010');
   assert.deepEqual(errors,[]);
   dom.window.close();
 });

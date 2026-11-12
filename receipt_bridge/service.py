@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,15 @@ from .config import telegram_identity
 from .images import atomic_write, local_ocr, process_image
 from .ledger import RemoteError
 from .messenger import check_telegram_size, identity
-from .models import Extraction, TextExtractions, auto_eligible, fingerprint, transaction
+from .models import (
+    Extraction,
+    TextExtractions,
+    auto_eligible,
+    blank_extraction,
+    display_amount,
+    fingerprint,
+    transaction,
+)
 from .store import dumps
 from .text_input import conflict_message, ground_text, merge_caption
 
@@ -25,6 +34,7 @@ HELP = """영수증 사진·이미지 파일·지출 텍스트를 보내세요. 
 /edit 작업ID account=계좌ID
 /rotate 작업ID 90 — 시계 방향 회전 (90·180·270)
 /original 작업ID — 자르지 않은 원본 구도로 다시 분석
+/stop — 현재 정보 입력 대화 종료 (영수증은 유지)
 /retry 작업ID — 실패 단계 재시도
 /cancel 작업ID — 저장 전 취소
 금액은 통화의 기본 단위(USD 12.34), 시간 삭제는 time=null.
@@ -60,11 +70,15 @@ class Service:
         user, chat = identity(update)
         try:
             cb = update.get("callback_query")
+            correction = self.correction_target(update)
             if cb:
                 parts = cb.get("data", "").split(":")
-                if len(parts) != 4 or parts[:2] != ["rb", "confirm"]:
+                if len(parts) != 4 or parts[0] != "rb" or parts[1] not in {"confirm", "edit"}:
                     return None
                 job = self.owned(parts[2], user, chat)
+                account = job["account"]
+            elif correction:
+                job, _ = correction
                 account = job["account"]
             else:
                 parts = update.get("message", {}).get("text", "").strip().split(maxsplit=2)
@@ -100,6 +114,111 @@ class Service:
         if job["state"] not in {"waiting", "failed"}:
             raise ValueError("분석이 끝난 뒤 다시 시도하세요")
 
+    def edit_key(self, user, chat):
+        return f"edit:{telegram_identity(self.settings.telegram_token)}:{user}:{chat}"
+
+    def missing_fields(self, job):
+        ex = json.loads(job["extraction"]) if job["extraction"] else {}
+        labels = {
+            "merchant": "상호명",
+            "amount": "결제 금액",
+            "date": "결제 날짜",
+            "currency": "통화 코드",
+            "category": "분류",
+        }
+        return [(key, label) for key, label in labels.items() if not ex.get(key)]
+
+    def merchant_candidates(self, user, chat):
+        return [
+            j
+            for j in self.store.pending(user, chat)
+            if j["input_kind"] == "image"
+            and j["state"] in {"waiting", "failed"}
+            and not j["payload"]
+            and not j["posting_id"]
+            and ("merchant", "상호명") in self.missing_fields(j)
+        ]
+
+    def correction_target(self, update):
+        message = update.get("message", {})
+        text = message.get("text", "").strip()
+        if not text or text.startswith("/"):
+            return None
+        user, chat = identity(update)
+        session = self.store.setting(self.edit_key(user, chat), {})
+        if session and session["expires"] > time.time():
+            job = self.store.get(session["id"])
+            if job and job["user"] == user and job["chat"] == chat and job["revision"] == session["revision"]:
+                if job["state"] in {"waiting", "failed"} and not job["payload"] and not job["posting_id"]:
+                    return job, session["field"]
+        # A bare merchant name cannot describe a new expense. Repair only one unambiguous image job.
+        if len(text) <= 200 and not re.search(r"[0-9=\n]", text):
+            jobs = self.merchant_candidates(user, chat)
+            if len(jobs) == 1:
+                return jobs[0], "merchant"
+        return None
+
+    def begin_edit(self, job, update):
+        self.editable(job)
+        missing = self.missing_fields(job)
+        field, label = missing[0] if missing else (None, None)
+        self.store.set_setting(
+            self.edit_key(job["user"], job["chat"]),
+            {
+                "id": job["id"],
+                "revision": job["revision"],
+                "field": field,
+                "expires": time.time() + 900,
+            },
+        )
+        examples = {
+            "merchant": "예: 테스트 상점",
+            "amount": "예: 5000 (쉼표·원 입력 가능)",
+            "date": "예: 2026-01-15",
+            "currency": "예: KRW",
+            "category": "예: 식비 또는 분류 코드",
+        }
+        prompt = (
+            f"{label}만 보내주세요. {examples[field]}"
+            if field
+            else "수정할 값을 보내세요. 예: merchant=새 상호명 또는 amount=5000"
+        )
+        self.reply(
+            update,
+            job["chat"],
+            f"영수증 {job['id']} 정보 입력\n{prompt}\n다른 지출을 보내려면 /stop으로 입력 대화를 종료하세요. 웹 작업 상세에서도 입력할 수 있습니다.",
+        )
+
+    def apply_correction(self, update, target, context):
+        job, field = target
+        text = update["message"]["text"].strip()
+        self.editable(job)
+        if re.match(r"^(merchant|amount|date|time|currency|category)=", text):
+            self.edit(job, text, context, notify=False)
+        elif field:
+            value = text
+            if field == "amount":
+                value = re.sub(r"\s*원$", "", text).strip()
+                if not re.fullmatch(r"(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,3})?", value):
+                    raise ValueError("금액은 숫자로 보내주세요. 예: 5,000원")
+                value = value.replace(",", "")
+            elif field == "currency":
+                value = text.upper()
+            elif field == "category":
+                _, categories = context or self.ledger.context(job["account"])
+                value = next(
+                    (c["code"] for c in categories if c["name"] == text and not c.get("hidden")), text
+                )
+            self.edit_values(job, {field: value}, context, notify=False)
+        else:
+            raise ValueError("수정 항목을 지정하세요. 예: merchant=상호명 또는 amount=5000 · 종료: /stop")
+        current = self.store.get(job["id"])
+        if self.missing_fields(current):
+            self.begin_edit(current, update)
+        else:
+            self.store.set_setting(self.edit_key(job["user"], job["chat"]), {})
+            self.status(current)
+
     def handle_update(self, update, context=None, answer=True):
         if not self.authorized_update(update):
             return
@@ -118,12 +237,15 @@ class Service:
                 if str(job["revision"]) != revision:
                     raise ValueError("이전 결과의 버튼입니다. /status로 최신 결과를 확인하세요")
                 if action == "confirm":
-                    self.confirm(job, context)
+                    if self.missing_fields(job):
+                        self.begin_edit(job, update)
+                    else:
+                        self.confirm(job, context)
                 elif action == "cancel":
                     self.cancel(job)
                     self.reply(update, chat, f"{job_id}: 취소했습니다. 보관한 원본은 남아 있습니다")
                 elif action == "edit":
-                    self.reply(update, chat, HELP)
+                    self.begin_edit(job, update)
                 else:
                     raise ValueError("지원하지 않는 버튼입니다")
                 try:
@@ -143,11 +265,37 @@ class Service:
                 check_telegram_size(doc.get("file_size", 0), self.settings.max_download_mb * 1024 * 1024)
                 file_id = doc["file_id"]
             text = message.get("text", "").strip()
+            correction = self.correction_target(update) if not file_id else None
+            if correction:
+                self.apply_correction(update, correction, context)
+                return
+            if (
+                not file_id
+                and text
+                and not text.startswith("/")
+                and len(text) <= 200
+                and not re.search(r"[0-9=\n]", text)
+            ):
+                if len(self.merchant_candidates(user, chat)) > 1:
+                    self.reply(
+                        update,
+                        chat,
+                        "상호명을 입력할 영수증이 여러 건입니다. 해당 영수증의 정보 입력·수정 버튼을 먼저 누르세요. 새 지출이라면 날짜와 금액도 함께 보내세요.",
+                    )
+                    return
             if file_id or (text and not text.startswith("/")):
                 self.receive_input(update, message, file_id, user, chat)
                 return
             parts = text.split(maxsplit=2)
             command = parts[0].split("@")[0] if parts else "/help"
+            if command == "/stop":
+                self.store.set_setting(self.edit_key(user, chat), {})
+                self.reply(
+                    update,
+                    chat,
+                    "정보 입력 대화를 종료했습니다. 수정한 내용과 영수증은 유지됩니다. 새 지출을 보내도 됩니다.",
+                )
+                return
             if command in {"/start", "/help"}:
                 self.reply(update, chat, HELP)
                 return
@@ -175,8 +323,9 @@ class Service:
                 self.reply(update, chat, f"{job['id']}: 취소했습니다. 원본은 보관됩니다")
             elif command == "/edit":
                 self.editable(job)
-                if len(parts) < 3 or not job["extraction"]:
-                    raise ValueError("분석 결과가 필요합니다. /retry로 다시 분석하세요")
+                if len(parts) < 3:
+                    self.begin_edit(job, update)
+                    return
                 self.edit(job, parts[2], context)
             elif command in {"/rotate", "/original"}:
                 self.editable(job)
@@ -241,7 +390,7 @@ class Service:
         stage = "attaching" if job["posting_id"] else "creating" if job["payload"] else "received"
         self.store.update(job["id"], state=stage, attempts=0, next_at=0, error=None)
 
-    def edit(self, job, text, context=None):
+    def edit(self, job, text, context=None, *, notify=True):
         if text.startswith("merchant="):
             values = {"merchant": text.removeprefix("merchant=").strip()}
         else:
@@ -251,9 +400,10 @@ class Service:
                     raise ValueError("수정은 필드=값 형태로 입력하세요")
                 key, value = pair.split("=", 1)
                 values[key] = None if value == "null" else value
-        self.edit_values(job, values, context)
+        self.edit_values(job, values, context, notify=notify)
 
-    def edit_values(self, job, values, context=None):
+    def edit_values(self, job, values, context=None, *, notify=True):
+        self.editable(job)
         if not values or not values.keys() <= {
             "merchant",
             "account",
@@ -264,7 +414,7 @@ class Service:
             "category",
         }:
             raise ValueError("지원하지 않는 수정 항목입니다")
-        ex = json.loads(job["extraction"])
+        ex = json.loads(job["extraction"]) if job["extraction"] else blank_extraction().model_dump()
         conflicts = json.loads(job["conflicts"])
         account = values.get("account", job["account"])
         for key, value in values.items():
@@ -295,7 +445,8 @@ class Service:
             state="waiting",
             error=error,
         )
-        self.status(self.store.get(job["id"]))
+        if notify:
+            self.status(self.store.get(job["id"]))
 
     def evaluate(self, job, context=None):
         self.require_account(job)
@@ -323,7 +474,15 @@ class Service:
         if job["adapter"] == "web":
             return  # Browser jobs are tracked in the DB and never generate Telegram messages.
         key = key or f"status:{job['id']}:{job['revision']}:{job['state']}"
-        lines = [f"작업 {job['id']} · {job['state']}", f"계좌: {job['account']}"]
+        labels = {
+            "waiting": "확인 대기",
+            "failed": "분석 실패",
+            "done": "저장 완료",
+            "cancelled": "취소됨",
+            "create_failed": "저장 확인 필요",
+            "attach_failed": "사진 첨부 실패",
+        }
+        lines = [f"영수증 {job['id']} · {labels.get(job['state'], job['state'])}"]
         if job["input_kind"] == "text":
             lines.append("텍스트 지출 · 사진 첨부 없음")
         if job["batch_size"] > 1:
@@ -336,7 +495,7 @@ class Service:
             lines += [
                 f"상호: {ex.merchant or '읽지 못함'}",
                 f"결제: {ex.date or '읽지 못함'} {ex.time or '(시간 없음)'}",
-                f"금액: {ex.amount or '읽지 못함'} {ex.currency or ''}",
+                f"금액: {display_amount(ex.amount, ex.currency)}",
                 f"분류: {ex.category or '선택 필요'}",
             ]
             lines += ex.warnings[:3]
@@ -344,19 +503,24 @@ class Service:
             if duplicates:
                 lines.append("⚠ 중복 후보: " + ", ".join(d["id"] for d in duplicates[:5]))
                 lines.append("기존 작업을 확인한 뒤 중복이어도 저장하려면 확인을 누르세요")
-            if job["state"] == "waiting":
-                buttons = {
-                    "inline_keyboard": [
-                        [
-                            {"text": label, "callback_data": f"rb:{action}:{job['id']}:{job['revision']}"}
-                            for label, action in [
-                                ("확인·저장", "confirm"),
-                                ("수정 방법", "edit"),
-                                ("취소", "cancel"),
-                            ]
-                        ]
+        if job["state"] in {"waiting", "failed"} and not job["payload"] and not job["posting_id"]:
+            actions = [("정보 입력·수정", "edit"), ("취소", "cancel")]
+            if job["state"] == "waiting" and not job["error"]:
+                actions.insert(0, ("확인·저장", "confirm"))
+            buttons = {
+                "inline_keyboard": [
+                    [
+                        {"text": label, "callback_data": f"rb:{action}:{job['id']}:{job['revision']}"}
+                        for label, action in actions
                     ]
-                }
+                ]
+            }
+            missing = self.missing_fields(job)
+            if missing:
+                lines.append("입력 필요: " + " · ".join(label for _, label in missing))
+                lines.append(
+                    "정보 입력·수정을 누르면 빠진 항목을 하나씩 입력할 수 있습니다. 웹 작업 상세에서도 가능합니다."
+                )
         lines += json.loads(job["image_warnings"])[:2]
         if job["error"]:
             lines.append("확인 필요: " + job["error"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import subprocess
 import tempfile
 import warnings
@@ -106,11 +107,45 @@ def perspective(image: Image.Image):
     return image, False
 
 
+def auto_orient(image: Image.Image):
+    """Estimate text direction locally; a manual rotation always takes precedence."""
+    preview = image.copy()
+    preview.thumbnail((2000, 2000))
+    data = io.BytesIO()
+    preview.save(data, "PNG")
+    try:
+        result = subprocess.run(
+            ["tesseract", "stdin", "stdout", "--psm", "0"],
+            input=data.getvalue(),
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+        text = result.stdout[:16000].decode("utf-8", errors="replace")
+        angle = re.search(r"^Rotate: (0|90|180|270)$", text, re.M)
+        confidence = re.search(r"^Orientation confidence: ([0-9.]+)$", text, re.M)
+        if angle and confidence and float(confidence[1]) >= 2:
+            degrees = int(angle[1])
+            if degrees:
+                return image.rotate(
+                    -degrees, expand=True
+                ), f"글자 방향을 추정해 {degrees}° 회전했습니다. 방향을 확인하세요"
+            return image, None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return image, "글자 방향을 확정하지 못했습니다. 사진이 누워 있으면 회전 후 재분석하세요"
+
+
 def process_image(original: Path, output: Path, rotation=0, use_original=False):
     image = load_image(original.read_bytes())
     notes = []
     if rotation:
         image = image.rotate(-rotation, expand=True)
+    else:
+        image, note = auto_orient(image)
+        if note:
+            notes.append(note)
+    oriented = image
     if not use_original:
         try:
             image, cropped = perspective(image)
@@ -122,7 +157,7 @@ def process_image(original: Path, output: Path, rotation=0, use_original=False):
             image = ImageEnhance.Brightness(image).enhance(1.08)
             image = ImageEnhance.Contrast(image).enhance(1.06)
         except (cv2.error, ValueError):
-            image = load_image(original.read_bytes()).rotate(-rotation, expand=True)
+            image = oriented
             notes.append("보정 실패로 전체 원본을 사용했습니다")
     else:
         notes.append("원본 구도를 사용했습니다")
@@ -134,7 +169,7 @@ def process_image(original: Path, output: Path, rotation=0, use_original=False):
 def local_ocr(image: Path, languages: str) -> str:
     try:
         result = subprocess.run(
-            ["tesseract", str(image), "stdout", "-l", languages, "--psm", "6"],
+            ["tesseract", str(image), "stdout", "-l", languages, "--psm", "3"],
             capture_output=True,
             timeout=45,
             check=True,

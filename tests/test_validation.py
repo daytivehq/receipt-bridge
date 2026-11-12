@@ -106,3 +106,20 @@ def test_settings_do_not_leak_secrets_and_load_file(tmp_path, monkeypatch):
     settings.allow_external_ai = True
     settings.ai_provider = "agy"
     settings.check_runtime()
+
+
+@pytest.mark.parametrize(
+    "value,currency,expected",
+    [
+        ("100000000", "KRW", "100,000,000원"),
+        ("1234.50", "USD", "1,234.50 USD"),
+        ("9007199254740993.010", "USD", "9,007,199,254,740,993.010 USD"),
+        ("0", "KRW", "0원"),
+        (None, "KRW", "읽지 못함"),
+        ("", "KRW", "읽지 못함"),
+    ],
+)
+def test_display_amount_formats_without_changing_stored_value(value, currency, expected):
+    from receipt_bridge.models import display_amount
+
+    assert display_amount(value, currency) == expected

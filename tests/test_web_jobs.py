@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date
 from http.client import HTTPResponse
 from pathlib import Path
 
@@ -297,3 +298,30 @@ def test_web_only_runtime_check_does_not_require_telegram_configuration():
     settings.web_enabled = False
     with pytest.raises(ValueError):
         settings.check_runtime()
+
+
+def test_failed_analysis_without_extraction_can_be_manually_completed_and_saved(web):
+    jobs, state, _, service, api = web
+    job = jobs.upload("MANUAL_ENTRY_KEY_1234", sample_image(), "test-account")
+    service.tick(telegram_ready=False)
+    state.store.update(job["id"], state="failed", extraction=None, error="AI 분석 실패")
+    jobs.control(job["id"], {"action": "edit", "revision": 0, "values": {"merchant": "직접 입력 상호"}})
+    current = state.store.get(job["id"])
+    assert current["state"] == "waiting" and current["error"] and not api.posts
+    with pytest.raises(ValueError):
+        jobs.control(job["id"], {"action": "confirm", "revision": 1})
+    values = {
+        "amount": "12000",
+        "date": date.today().isoformat(),
+        "currency": "KRW",
+        "category": "food",
+    }
+    jobs.control(job["id"], {"action": "edit", "revision": 1, "values": values})
+    assert not state.store.get(job["id"])["error"] and not api.posts
+    jobs.control(job["id"], {"action": "confirm", "revision": 2})
+    with pytest.raises(ValueError):
+        jobs.control(job["id"], {"action": "edit", "revision": 2, "values": {"amount": "1"}})
+    service.tick(telegram_ready=False)
+    service.tick(telegram_ready=False)
+    assert state.store.get(job["id"])["state"] == "done"
+    assert len(api.posts) == len(api.uploads) == 1

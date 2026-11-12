@@ -27,6 +27,21 @@ class Extraction(BaseModel):
     warnings: list[Annotated[str, Field(max_length=500)]] = Field(max_length=20)
 
 
+def blank_extraction():
+    # Used only for explicit manual input; AI responses still require every schema field.
+    return Extraction(**{name: None for name in Extraction.model_fields if name != "warnings"}, warnings=[])
+
+
+def display_amount(value: str | None, currency: str | None = None) -> str:
+    """Display only: stored amounts and API payloads remain unformatted strings."""
+    if not value:
+        return "읽지 못함"
+    if re.fullmatch(r"\d+(?:\.\d+)?", value):
+        whole, dot, fraction = value.partition(".")
+        value = f"{int(whole):,}" + dot + fraction
+    return value + ("원" if currency == "KRW" else " " + currency if currency else "")
+
+
 def minor_units(value: str | None, scale: int) -> str:
     if value is None or not re.fullmatch(r"[0-9]{1,16}(?:\.[0-9]{1,3})?", value):
         raise ValueError("금액은 쉼표 없는 양수 숫자 문자열이어야 합니다")

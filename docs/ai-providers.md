@@ -30,7 +30,14 @@ CLI 분석 주소의 기본값은 `http://ai-runner:8090`입니다. 같은 Compo
 
 ## 최초 CLI 인증
 
-계정 로그인은 서비스가 대신 승인할 수 없습니다. 서버의 Compose 설치 폴더에서 한 번만 실행합니다. 이후 인증은 `ai-home` 볼륨에 보관되며, 제공자를 바꿀 때마다 다시 설치하지 않습니다.
+계정 로그인은 서비스가 대신 승인할 수 없습니다. **이 서비스를 설치한 서버의 터미널**에서 한 번만 실행합니다. 먼저 `compose.yaml`이 있는 폴더로 이동하세요. 홈 폴더(`~`)에서 바로 실행하면 `no configuration file provided` 오류가 납니다.
+
+```bash
+# 실제 compose.yaml이 있는 설치 폴더로 경로를 바꾸세요.
+cd "/실제/설치/폴더"
+```
+
+Docker 관리 도구를 사용했다면 해당 프로젝트의 Compose 파일 저장 위치를 확인합니다. 개발 소스 폴더와 운영 설치 폴더는 서로 다를 수 있습니다. **인증할 서비스의 폴더**를 선택하세요. 이후 인증은 해당 프로젝트의 `ai-home` 볼륨에 보관됩니다.
 
 ### Antigravity
 
@@ -59,6 +66,16 @@ docker compose run --rm -e HOME=/ai-home -e CODEX_HOME=/ai-home/.codex --entrypo
 ```
 
 표시된 주소·코드로 로그인합니다. 웹의 연결 확인은 저장된 인증의 존재를 검사하며, 실제 모델 사용 권한까지 보장하지 않습니다.
+
+### 개발 서비스에서 실행
+
+위의 일반 명령 대신 **소스 저장소 폴더에서** 다음 명령을 실행합니다. 운영 인증과는 별도입니다.
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yaml run --rm -e HOME=/ai-home -e SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" --entrypoint agy ai-runner
+```
+
+Codex를 사용한다면 `run` 뒤의 옵션을 위 Codex 명령과 동일하게 바꿉니다. 어느 폴더에서든 실행하려면 `.env.dev`와 `compose.dev.yaml`을 각각 실제 **절대경로**로 지정할 수 있습니다. 일반 설치도 `docker compose -f /실제/설치/폴더/compose.yaml run ...`으로 지정할 수 있습니다.
 
 ### Claude
 

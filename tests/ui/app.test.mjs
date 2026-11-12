@@ -24,7 +24,7 @@ const status = {demo:true,ready:true,paused:false,revision:0,applied_revision:0,
   checks:{telegram:true,ledger:true,ai:true,account:true,allowlist:true}};
 const flush = async () => {for(let i=0;i<12;i++) await new Promise(resolve=>setImmediate(resolve));};
 
-async function app(setupRequired=false,responseStatus=status,savedSecrets={},pathname="/", initialSettings=settings, detailJob=job){
+async function app(setupRequired=false,responseStatus=status,savedSecrets={},pathname="/", initialSettings=settings, detailJob=job, accountResponses=null){
   const errors=[];
   const console = new VirtualConsole();
   console.on('jsdomError', error=>errors.push(error.message));
@@ -36,7 +36,7 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
   w.HTMLDialogElement.prototype.close=function(){this.open=false;};
   w.fetch=async (path,options={})=>{
     requests.push({path,options});
-    let body;
+    let body,code=200;
     if(path==='/api/session')body={authenticated:false,setup_required:setupRequired};
     else if(path==='/api/setup'){body={csrf:'TEST_CSRF'};setupRequired=false;}
     else if(path==='/api/login')body={csrf:'TEST_CSRF'};
@@ -49,7 +49,11 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
     else if(path==='/api/control')body={...status,paused:JSON.parse(options.body).paused};
     else if(path.startsWith('/api/jobs?'))body={items:[job],total:1,page:1,page_size:20};
     else if(path.startsWith('/api/logs?'))body={items:[{id:1,at:Date.parse('2026-11-02T15:11:00Z')/1000,level:'info',message:'테스트 로그',job_id:job.id}],total:1,page:1,page_size:50,timezone:'Asia/Seoul'};
-    else if(path==='/api/accounts')body={accounts:[{id:'test-account',name:'테스트 계좌',currency:'KRW'}],status:{...responseStatus,web_ready:true}};
+    else if(path==='/api/accounts'){
+      body=accountResponses?.length ? accountResponses.shift() : {accounts:[{id:'test-account',name:'테스트 계좌',currency:'KRW'}]};
+      if(body.error)code=502;
+      else body={...body,status:{...responseStatus,web_ready:responseStatus.web_ready??true}};
+    }
     else if(path==='/api/uploads')body={id:'test-job',state:'received'};
     else if(path==='/api/jobs/test-job/categories')body={categories:[{code:'food',name:'식비'}]};
     else if(path==='/api/jobs/test-job/control'){
@@ -61,7 +65,7 @@ async function app(setupRequired=false,responseStatus=status,savedSecrets={},pat
     }
     else if(path==='/api/jobs/test-job')body=detailJob;
     else throw Error('Unexpected API request '+path);
-    return {ok:true,status:200,json:async()=>structuredClone(body)};
+    return {ok:code===200,status:code,json:async()=>structuredClone(body)};
   };
   for (const element of w.document.querySelectorAll('script[src]')) {
     const path=element.getAttribute('src');
@@ -458,6 +462,8 @@ test('CLI connection checks, model selection and API keys stay out of general se
   assert.equal(d.querySelector('#ai-setup').hidden,false);
   assert.equal(d.querySelector('#ai-claude-key').hidden,true);
   assert.match(d.querySelector('#ai-login-command').textContent,/--entrypoint agy/);
+  assert.match(d.querySelector('#ai-login-command').textContent,/cd "\/실제\/설치\/폴더" &&/);
+  assert.match(d.querySelector('#ai-login-guide').textContent,/compose.yaml.*설치 폴더/);
   d.querySelector('#ai-check').click();
   await flush();
   const call=requests.find(r=>r.path==='/api/ai/check');
@@ -582,6 +588,59 @@ test('browser receipt editor preserves revision when confirming',async()=>{
   const confirm=requests.filter(r=>r.path==='/api/jobs/test-job/control').at(-1);
   assert.equal(JSON.parse(confirm.options.body).action,'confirm');
   assert.equal(JSON.parse(confirm.options.body).revision,1);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('upload account lookup failure and empty results stay disabled until successful retry',async()=>{
+  const {dom,w,requests,errors}=await app(false,status,{},'/',settings,job,[
+    {error:'가계부 연결 실패 · 같은 Docker 네트워크를 확인하세요'},
+    {accounts:[]},
+    {accounts:[{id:'test-account',name:'테스트 계좌',currency:'KRW'}]},
+  ]);
+  await login(w);
+  const d=w.document;
+  d.querySelector('[data-page="upload"]').click(); await flush();
+  assert.match(d.querySelector('#upload-feedback').textContent,/Docker 네트워크/);
+  assert.equal(d.querySelector('#upload-account').disabled,true);
+  const files=d.querySelector('#upload-files');
+  Object.defineProperty(files,'files',{value:[new w.File(['TEST'],'test.png',{type:'image/png'})]});
+  files.dispatchEvent(new w.Event('change'));
+  assert.equal(d.querySelector('#upload-form button[type="submit"]').disabled,true);
+  d.querySelector('#upload-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  assert.equal(requests.some(r=>r.path==='/api/uploads'),false);
+  d.querySelector('#upload-reload-accounts').click(); await flush();
+  assert.match(d.querySelector('#upload-feedback').textContent,/read·create·receipts/);
+  files.dispatchEvent(new w.Event('change'));
+  assert.equal(d.querySelector('#upload-form button[type="submit"]').disabled,true);
+  d.querySelector('#upload-reload-accounts').click(); await flush();
+  assert.equal(d.querySelector('#upload-account').value,'test-account');
+  assert.equal(d.querySelector('#upload-form button[type="submit"]').disabled,false);
+  d.querySelector('#upload-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/uploads').length,1);
+  d.querySelector('#upload-reload-accounts').click(); await flush();
+  assert.equal(d.querySelector('#upload-form button[type="submit"]').disabled,true);
+  assert.deepEqual(errors,[]);
+  dom.window.close();
+});
+
+test('30MB browser upload uses configured limit and settings show supported range',async()=>{
+  const {dom,w,requests,errors}=await app(false,status,{},'/',{...settings,max_download_mb:30});
+  await login(w);
+  const d=w.document;
+  d.querySelector('[data-page="settings"]').click(); await flush();
+  const limit=d.querySelector('[name="max_download_mb"]');
+  assert.equal(limit.min,'1'); assert.equal(limit.max,'100');
+  assert.match(limit.parentElement.textContent,/Telegram.*20MB/);
+  d.querySelector('[data-page="upload"]').click(); await flush();
+  assert.match(d.querySelector('#upload-feedback').textContent,/30MB/);
+  const file=new w.File(['TEST'],'large.png',{type:'image/png'});
+  Object.defineProperty(file,'size',{value:30*1024*1024});
+  const files=d.querySelector('#upload-files');
+  Object.defineProperty(files,'files',{value:[file]});
+  files.dispatchEvent(new w.Event('change'));
+  d.querySelector('#upload-form').dispatchEvent(new w.Event('submit',{cancelable:true})); await flush();
+  assert.equal(requests.filter(r=>r.path==='/api/uploads').length,1);
   assert.deepEqual(errors,[]);
   dom.window.close();
 });

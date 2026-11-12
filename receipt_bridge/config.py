@@ -51,7 +51,7 @@ class Settings(BaseModel):
     ai_runner_token: SecretStr = SecretStr("")
     ai_runner_url: str = "http://ai-runner:8090"
     ai_timeout: int = Field(default=180, ge=10, le=1800)
-    max_download_mb: int = Field(default=20, ge=1, le=20)
+    max_download_mb: int = Field(default=20, ge=1, le=100)
     max_attempts: int = Field(default=5, ge=1, le=20)
     retry_seconds: int = Field(default=30, ge=1)
     max_amount_minor: int = Field(default=9000000000000, ge=1, le=9000000000000)

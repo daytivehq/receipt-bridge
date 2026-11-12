@@ -384,10 +384,15 @@ def make_server(state: AdminState, host=None, port=None):
                         },
                     )
                 if path == "/api/accounts":
+                    settings = state.effective()
+                    if not configured(settings.ledger_password):
+                        return self.json(
+                            400, {"error": "서비스 설정에서 가계부 API 주소와 앱 비밀번호를 입력하세요"}
+                        )
                     return self.json(
                         200,
                         {
-                            "accounts": WebJobs(state.effective(), state.store).accounts(),
+                            "accounts": WebJobs(settings, state.store).accounts(),
                             "status": state.status(),
                         },
                     )
@@ -432,8 +437,20 @@ def make_server(state: AdminState, host=None, port=None):
                         else "요청 값을 확인하세요"
                     },
                 )
-            except RemoteError:
-                self.json(502, {"error": "가계부 연결·앱 비밀번호·계좌 권한을 확인하세요"})
+            except RemoteError as exc:
+                message = "가계부 연결·앱 비밀번호·계좌 권한을 확인하세요"
+                if path == "/api/accounts" and exc.status == 0:
+                    message = (
+                        "가계부에 연결할 수 없습니다. 서비스 설정의 API 주소를 확인하세요. "
+                        "duet-ledger 같은 컨테이너 이름은 같은 Docker 네트워크에서만 사용할 수 있습니다. "
+                        "다른 네트워크라면 접속 가능한 가계부 도메인 또는 서버 IP·공개 포트를 입력하세요."
+                    )
+                elif path == "/api/accounts" and exc.status in {401, 403}:
+                    message = (
+                        "가계부 인증 또는 조회 권한이 없습니다. 서비스 설정의 앱 비밀번호와 "
+                        "가계부에서 발급한 비밀번호의 허용 계좌·read 권한을 확인하세요."
+                    )
+                self.json(502, {"error": message})
             except KeyError:
                 self.json(400, {"error": "요청 값을 확인하세요"})
             except Exception:

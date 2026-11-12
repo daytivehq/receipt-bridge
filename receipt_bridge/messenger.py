@@ -11,6 +11,15 @@ from PIL import Image
 from .images import jpeg_bytes
 from .ledger import RemoteError, retry_delay
 
+TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
+
+def check_telegram_size(size, configured_limit):
+    if size > TELEGRAM_DOWNLOAD_LIMIT:
+        raise ValueError("Telegram 봇은 20MB 이하만 다운로드할 수 있습니다. 큰 사진은 웹에서 업로드하세요")
+    if size > configured_limit:
+        raise ValueError("사진 크기가 설정된 수신 한도를 넘었습니다")
+
 
 class Messenger(Protocol):
     def download(self, file_id: str) -> bytes: ...
@@ -65,8 +74,7 @@ class Telegram:
 
     def download(self, file_id):
         file = self.call("getFile", {"file_id": file_id})
-        if file.get("file_size", 0) > self.limit:
-            raise ValueError("사진은 설정된 수신 크기(최대 20MB) 이하로 보내주세요")
+        check_telegram_size(file.get("file_size", 0), self.limit)
         path = file.get("file_path", "")
         if not path or path.startswith("/") or ".." in path.split("/") or ":" in path:
             raise ValueError("사진 다운로드 경로가 올바르지 않습니다")
@@ -77,8 +85,7 @@ class Telegram:
                 data = bytearray()
                 for chunk in response.iter_bytes():
                     data.extend(chunk)
-                    if len(data) > self.limit:
-                        raise ValueError("사진 수신 크기를 초과했습니다")
+                    check_telegram_size(len(data), self.limit)
                 return bytes(data)
         except httpx.HTTPError:
             raise RemoteError("텔레그램 다운로드") from None

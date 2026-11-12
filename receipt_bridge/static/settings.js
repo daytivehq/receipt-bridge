@@ -190,6 +190,8 @@ function settingsField(spec, value) {
             : value,
       placeholder,
       step: type === "number" ? "1" : null,
+      min: key === "max_download_mb" ? "1" : null,
+      max: key === "max_download_mb" ? "100" : null,
       inputmode: key.endsWith("_amount_minor") ? "numeric" : null,
     });
   if (key.endsWith("_amount_minor")) {
@@ -217,6 +219,9 @@ function settingsField(spec, value) {
     { class: "field " + (full ? "full" : ""), "data-setting": key },
     el("label", { for: "set-" + key }, label),
     input,
+    key === "max_download_mb"
+      ? el("small", {}, "1~100MB · 웹 업로드에 적용합니다. Telegram 봇은 최대 20MB입니다. 사진은 4천만 화소 이하이며, 한도를 높이면 메모리·저장 공간 사용량이 늘어납니다.")
+      : null,
     type === "map"
       ? el(
           "small",
@@ -390,7 +395,8 @@ function aiSetupControls(form, values) {
       el("small", {}, "분석 전용 저장 공간에 보관합니다. 기존 키는 입력하지 않으면 유지합니다.")),
     el("details", { id: "ai-login-guide" },
       el("summary", {}, "최초 계정 로그인 방법"),
-      el("p", {}, "서버 터미널에서 다음 명령을 한 번 실행하고 표시되는 주소에서 로그인하세요. Antigravity는 브라우저의 인증 코드를 터미널에 입력합니다. 로그인 정보는 분석 볼륨에 유지됩니다."),
+      el("p", {}, "이 서비스를 설치한 서버의 터미널에서 실행합니다. 먼저 cd 명령의 경로를 실제 compose.yaml이 있는 설치 폴더로 바꾸세요. 홈 폴더(~)에서 바로 실행하면 설정 파일을 찾지 못합니다. Docker 관리 도구로 설치했다면 해당 프로젝트의 Compose 파일 저장 위치를 확인하세요."),
+      el("p", {}, "명령 실행 후 표시되는 주소에서 로그인하세요. Antigravity는 브라우저의 인증 코드를 터미널에 입력합니다. 로그인 정보는 분석 볼륨에 유지됩니다. 개발용 compose.dev.yaml은 문서의 개발용 명령을 사용하세요."),
       el("pre", {}, el("code", { id: "ai-login-command" }))),
   );
 }
@@ -415,9 +421,9 @@ function configureAIFields(form, values) {
     form.querySelector("#ai-setup").hidden = provider === "ollama";
     form.querySelector("#ai-claude-key").hidden = provider !== "claude";
     form.querySelector("#ai-login-guide").hidden = provider === "claude";
-    form.querySelector("#ai-login-command").textContent = provider === "codex"
+    form.querySelector("#ai-login-command").textContent = '# 아래 경로를 실제 설치 폴더로 바꾸세요.\ncd "/실제/설치/폴더" &&\n' + (provider === "codex"
       ? "docker compose run --rm -e HOME=/ai-home -e CODEX_HOME=/ai-home/.codex --entrypoint codex ai-runner login --device-auth"
-      : 'docker compose run --rm -e HOME=/ai-home -e SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" --entrypoint agy ai-runner';
+      : 'docker compose run --rm -e HOME=/ai-home -e SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" --entrypoint agy ai-runner');
     form.querySelector("#ai-check-result").textContent = "설정을 저장한 뒤 분석 서비스 연결을 확인하세요.";
     form.querySelector("#ai-model-options").replaceChildren();
     const { modelHint, description } = AI_PROVIDERS[provider];

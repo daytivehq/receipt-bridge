@@ -663,13 +663,15 @@ async function upload() {
   const content = $("#content");
   content.replaceChildren(head("사진 업로드", "영수증을 분석하고 이 화면에서 확인·수정·저장하세요."));
   const feedback = el("p", { id: "upload-feedback", role: "status" });
-  const account = el("select", { id: "upload-account", required: "" });
+  const account = el("select", { id: "upload-account", required: "", disabled: "" });
+  const reload = el("button", { type: "button", id: "upload-reload-accounts", class: "button" }, "계좌 다시 불러오기");
   const files = el("input", { id: "upload-files", type: "file", accept: "image/jpeg,image/png,image/webp", multiple: "", required: "" });
   const caption = el("textarea", { id: "upload-caption", maxlength: "4096", placeholder: "예: 식비로 분류해줘" });
   const list = el("div", { id: "upload-results", class: "upload-results" });
   const button = el("button", { type: "submit", class: "primary", disabled: "" }, "분석 시작");
   const form = el("form", { id: "upload-form", class: "upload-form" },
-    el("div", { class: "field" }, el("label", { for: account.id }, "저장 계좌"), account),
+    el("div", { class: "field" }, el("label", { for: account.id }, "저장 계좌"), account, reload,
+      el("small", {}, "목록이 비어 있다면 ", el("a", { href: "/settings", onclick: (event) => { event.preventDefault(); navigate("settings"); } }, "서비스 설정"), "의 가계부 연결을 확인하세요.")),
     el("div", { class: "field" }, el("label", { for: files.id }, "영수증 사진 · 여러 장 선택 가능"), files),
     el("div", { class: "field" }, el("label", { for: caption.id }, "사진 설명 (선택)"), caption,
       el("small", {}, "여러 장을 선택하면 같은 설명을 각 사진에 적용합니다.")),
@@ -680,19 +682,34 @@ async function upload() {
   let entries = [];
   let ready = false;
   let limit = 20;
-  try {
-    const [data, config] = await Promise.all([api("/api/accounts"), api("/api/settings")]);
-    if (page !== "upload") return;
-    setStatus(data.status);
-    limit = config.settings.max_download_mb;
-    account.append(...data.accounts.map((item) => el("option", { value: item.id }, `${item.name} · ${item.currency}`)));
-    ready = data.status.web_ready ?? data.status.ready;
-    button.disabled = !ready || !data.accounts.length;
-    feedback.textContent = !data.accounts.length ? "저장 가능한 계좌가 없습니다. 가계부 앱 비밀번호의 계좌·권한을 확인하세요."
-      : !ready ? "서비스 설정에서 가계부와 AI 설정을 완료하세요. Telegram 설정은 필요하지 않습니다."
-      : data.status.paused ? "처리가 일시정지되어 있습니다. 접수 후 대시보드에서 처리를 재개하세요."
-      : `사진 한 장당 ${limit}MB 이하입니다. 사진별로 차례로 분석합니다.`;
-  } catch (error) { feedback.textContent = error.message; }
+  async function loadAccounts() {
+    const previousAccount = account.value;
+    ready = false;
+    button.disabled = account.disabled = reload.disabled = true;
+    account.replaceChildren(el("option", { value: "" }, "계좌를 불러오는 중…"));
+    feedback.textContent = "가계부 연결을 확인하고 있습니다…";
+    try {
+      const [data, config] = await Promise.all([api("/api/accounts"), api("/api/settings")]);
+      if (page !== "upload") return;
+      setStatus(data.status);
+      limit = config.settings.max_download_mb;
+      account.replaceChildren(...data.accounts.map((item) => el("option", { value: item.id }, `${item.name} · ${item.currency}`)));
+      if (data.accounts.some((item) => item.id === previousAccount)) account.value = previousAccount;
+      if (!data.accounts.length) account.append(el("option", { value: "" }, "저장 가능한 계좌 없음"));
+      account.disabled = !data.accounts.length;
+      ready = (data.status.web_ready ?? data.status.ready) && data.accounts.length > 0;
+      button.disabled = !ready || (entries.length > 0 && entries.every((entry) => entry.id));
+      feedback.textContent = !data.accounts.length ? "저장 가능한 계좌가 없습니다. 가계부에 활성 계좌가 있는지, 앱 비밀번호에 해당 계좌의 read·create·receipts 권한이 있는지 확인하세요. 읽기 전용·보관된 계좌는 표시하지 않습니다."
+        : !ready ? "서비스 설정에서 가계부와 AI 설정을 완료하세요. Telegram 설정은 필요하지 않습니다."
+        : data.status.paused ? "처리가 일시정지되어 있습니다. 접수 후 대시보드에서 처리를 재개하세요."
+        : `사진 한 장당 ${limit}MB 이하입니다. 사진별로 차례로 분석합니다.`;
+    } catch (error) {
+      account.replaceChildren(el("option", { value: "" }, "계좌를 불러오지 못했습니다"));
+      feedback.textContent = error.message;
+    } finally { reload.disabled = false; }
+  }
+  reload.addEventListener("click", loadAccounts);
+  await loadAccounts();
   files.addEventListener("change", () => { entries = []; list.replaceChildren(); button.textContent = "분석 시작"; button.disabled = !ready; });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -703,6 +720,7 @@ async function upload() {
       return;
     }
     const chosenAccount = account.value;
+    if (!chosenAccount) { feedback.textContent = "저장 계좌를 선택하세요."; return; }
     const chosenCaption = caption.value.trim();
     if (!entries.length) entries = selected.map((file) => ({ file, key: uploadKey(), account: chosenAccount, caption: chosenCaption }));
     if (entries.some((entry) => !entry.id && (entry.account !== chosenAccount || entry.caption !== chosenCaption))) {
@@ -713,7 +731,7 @@ async function upload() {
     uploadAbort = controller;
     dirty = true;
     button.disabled = true;
-    for (const input of [files, account, caption]) input.disabled = true;
+    for (const input of [files, account, caption, reload]) input.disabled = true;
     try {
       for (const entry of entries) {
         if (entry.id) continue;
@@ -743,7 +761,7 @@ async function upload() {
     } finally {
       if (uploadAbort === controller) uploadAbort = null;
       if (page === "upload") dirty = false;
-      for (const input of [files, account, caption]) input.disabled = false;
+      for (const input of [files, account, caption, reload]) input.disabled = false;
       button.disabled = entries.length > 0 && entries.every((entry) => entry.id);
       button.textContent = entries.some((entry) => !entry.id) ? "실패한 사진 다시 업로드" : "업로드 완료";
     }

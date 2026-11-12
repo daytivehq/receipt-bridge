@@ -150,6 +150,34 @@ def test_ledger_redirect_refused_and_errors_redacted():
     ledger.close()
 
 
+@pytest.mark.parametrize("metadata_size", [1, 21 * 1024 * 1024])
+def test_telegram_cloud_download_limit_remains_20mb_when_web_limit_is_30mb(metadata_size):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": {
+                        "file_size": metadata_size,
+                        "file_path": "photos/test.jpg",
+                    },
+                },
+            )
+        return httpx.Response(200, content=b"0" * (20 * 1024 * 1024 + 1))
+
+    telegram = Telegram("SECRET", max_download_mb=30, transport=httpx.MockTransport(handle))
+    try:
+        with pytest.raises(ValueError, match="20MB.*웹"):
+            telegram.download("TEST_FILE")
+        assert len(calls) == (1 if metadata_size > 20 * 1024 * 1024 else 2)
+    finally:
+        telegram.close()
+
+
 def test_runner_only_receives_image_and_categories(tmp_path):
     path = tmp_path / "receipt.jpg"
     path.write_bytes(sample_image())

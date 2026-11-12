@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from .config import telegram_identity
 from .images import atomic_write, local_ocr, process_image
 from .ledger import RemoteError
-from .messenger import identity
+from .messenger import check_telegram_size, identity
 from .models import Extraction, TextExtractions, auto_eligible, fingerprint, transaction
 from .store import dumps
 from .text_input import conflict_message, ground_text, merge_caption
@@ -140,8 +140,7 @@ class Service:
                 doc = message["document"]
                 if doc.get("mime_type") not in {"image/jpeg", "image/png", "image/webp"}:
                     raise ValueError("JPG·PNG·WebP 이미지 파일을 보내세요")
-                if doc.get("file_size", 0) > self.settings.max_download_mb * 1024 * 1024:
-                    raise ValueError("이미지는 수신 크기 설정 이하로 보내세요")
+                check_telegram_size(doc.get("file_size", 0), self.settings.max_download_mb * 1024 * 1024)
                 file_id = doc["file_id"]
             text = message.get("text", "").strip()
             if file_id or (text and not text.startswith("/")):

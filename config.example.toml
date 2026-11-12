@@ -17,7 +17,7 @@ allow_external_ai = false                  # codex/claude/agy는 명시적으로
 ai_runner_url = "http://ai-runner:8090"
 ai_timeout = 180
 
-max_download_mb = 20
+max_download_mb = 20                       # 웹: 1~100MB, Telegram 봇: 최대 20MB
 max_attempts = 5
 retry_seconds = 30
 max_amount_minor = 9000000000000            # 최소 통화 단위, Duet Ledger 한도 이하

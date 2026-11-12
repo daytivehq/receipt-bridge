@@ -124,6 +124,69 @@ def test_upload_auth_csrf_origin_size_and_bytes_are_checked_before_queueing(web)
     assert not api.posts
 
 
+def test_receive_limit_can_be_saved_and_30mb_photo_uploaded(web):
+    jobs, state, server, _, api = web
+    auth = login(server)
+    assert request(server, "/api/settings", {"max_download_mb": 30}, auth)[0] == 200
+    assert state.effective().max_download_mb == 30
+    # A valid synthetic PNG with padding exercises the full multipart request size.
+    data = sample_image().ljust(30 * 1024 * 1024, b"\0")
+    code, result = upload_request(server, auth, data=data)
+    assert code == 200
+    assert Path(state.store.get(result["id"])["original"]).stat().st_size == len(data)
+    assert upload_request(server, auth, overrides={"Content-Length": str(31 * 1024 * 1024)})[0] == 413
+    assert not api.posts and not api.uploads
+
+
+@pytest.mark.parametrize("size,expected", [(1, 200), (100, 200), (0, 400), (101, 400)])
+def test_receive_limit_range_is_validated_on_settings_save(web, size, expected):
+    _, state, server, _, _ = web
+    auth = login(server)
+    assert request(server, "/api/settings", {"max_download_mb": size}, auth)[0] == expected
+    assert state.effective().max_download_mb == (size if expected == 200 else 20)
+
+
+@pytest.mark.parametrize("status,hint", [(0, "같은 Docker 네트워크"), (401, "read 권한"), (403, "read 권한")])
+def test_account_connection_errors_explain_remedy_without_leaking_secrets(web, monkeypatch, status, hint):
+    from receipt_bridge import web_jobs
+
+    _, _, server, _, _ = web
+
+    def fail(request):
+        if not status:
+            raise httpx.ConnectError("SECRET_URL_TOKEN", request=request)
+        return httpx.Response(status, json={"error": "SECRET_URL_TOKEN"})
+
+    monkeypatch.setattr(
+        web_jobs, "Ledger", lambda url, password: Ledger(url, password, httpx.MockTransport(fail))
+    )
+    code, _, result = request(server, "/api/accounts", headers=login(server))
+    assert code == 502 and hint in result["error"]
+    assert "SECRET_URL_TOKEN" not in str(result) and "TEST_ONLY" not in str(result)
+
+
+def test_browser_account_list_excludes_archived_and_read_only_accounts(web, monkeypatch):
+    from receipt_bridge import web_jobs
+    from tests.fakes import ACCOUNT
+
+    _, _, server, _, _ = web
+    accounts = [
+        ACCOUNT,
+        {**ACCOUNT, "id": "shared", "role": "editor"},
+        {**ACCOUNT, "id": "read-only", "role": "viewer"},
+        {**ACCOUNT, "id": "old", "archived": True},
+    ]
+    monkeypatch.setattr(
+        web_jobs,
+        "Ledger",
+        lambda url, password: Ledger(
+            url, password, httpx.MockTransport(lambda _: httpx.Response(200, json=accounts))
+        ),
+    )
+    result = request(server, "/api/accounts", headers=login(server))[2]
+    assert [account["id"] for account in result["accounts"]] == ["test-account", "shared"]
+
+
 def test_upload_retries_are_idempotent_and_changed_content_is_rejected(web):
     jobs, state, server, service, api = web
     data = sample_image()

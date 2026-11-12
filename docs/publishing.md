@@ -5,7 +5,7 @@
 ## 릴리즈
 
 1. `receipt_bridge/__init__.py`의 버전을 올리고 변경 사항을 `main`에 커밋·푸시합니다. 실제 설정·접속 키·DB가 포함되지 않았는지 확인합니다.
-2. GitHub의 **Releases → Draft a new release**에서 최신 커밋에 `v버전` 태그를 새로 만듭니다. 예: 프로그램 버전 `0.3.0` → 태그 `v0.3.0`.
+2. GitHub의 **Releases → Draft a new release**에서 최신 커밋에 `v버전` 태그를 새로 만듭니다. 예: 프로그램 버전 `0.3.1` → 태그 `v0.3.1`.
 3. 릴리즈 내용을 작성하고 정식 릴리즈로 발행합니다.
 4. **Actions → Docker image**에서 테스트와 이미지 발행이 모두 성공했는지 확인합니다.
 5. 처음 발행할 때는 저장소 소유자의 **Packages → receipt-bridge → Package settings**에서 `receipt-bridge`와 `receipt-bridge-ai-runner` 패키지를 모두 **Public**으로 설정합니다.

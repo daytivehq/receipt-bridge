@@ -93,7 +93,7 @@ docker compose logs --tail=50 receipt-bridge
 docker compose exec receipt-bridge python -c 'from receipt_bridge import __version__; print(__version__)'
 ```
 
-특정 버전을 쓰려면 두 서비스의 `image` 끝을 `:latest`에서 같은 버전으로 바꿉니다. 예: `:0.3.0`. 저장소 기본 구성은 `.env`의 `RECEIPT_BRIDGE_IMAGE`와 `AI_RUNNER_IMAGE`로 지정할 수도 있습니다. 이전 버전으로 내릴 때는 릴리즈의 DB 호환성과 백업을 먼저 확인하세요.
+특정 버전을 쓰려면 두 서비스의 `image` 끝을 `:latest`에서 같은 버전으로 바꿉니다. 예: `:0.3.1`. 저장소 기본 구성은 `.env`의 `RECEIPT_BRIDGE_IMAGE`와 `AI_RUNNER_IMAGE`로 지정할 수도 있습니다. 이전 버전으로 내릴 때는 릴리즈의 DB 호환성과 백업을 먼저 확인하세요.
 
 같은 프로젝트 이름과 데이터 볼륨을 유지합니다. 파일이나 설치 위치를 바꾼다면 [기존 설치 유지](compose.md#기존-설치-유지)를 먼저 확인하세요. 기존 `.env`·`config.toml`을 예시 파일로 덮어쓰지 않습니다.
 
